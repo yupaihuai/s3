@@ -1,0 +1,29 @@
+# PlatformIO & VSCode
+.pio/
+.vscode/
+
+# Common C/C++ build artifacts
+*.o
+*.d
+*.so
+*.a
+*.out
+*.exe
+
+# Local configuration files
+# 如果你有本地配置文件，例如包含密码的 private_config.h，可以在这里添加
+# src/private_config.h
+
+# IDE temporary files
+.idea/
+.cproject
+.project
+
+# macOS files
+.DS_Store
+
+# Windows files
+Thumbs.db
+
+# Log files
+*.log
