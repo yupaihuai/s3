@@ -10,7 +10,7 @@
  */
 #include "Sys_WebServer.h"
 #include "types.h"
-#include "Debug.h"
+#include "Sys_Debug.h"
 #include "Sys_Tasks.h"        // 需要访问 xCommandQueue 和 Command 结构体
 #include "Sys_Filesystem.h"   // 需要访问 LittleFS 和 FFat
 #include "Sys_SettingsManager.h"

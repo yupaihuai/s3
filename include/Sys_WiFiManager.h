@@ -22,7 +22,7 @@
 
 // 定义清晰的WiFi状态，供外部模块查询
 enum class WiFiState {
-    DISABLED,          // WiFi功能被禁用
+    WIFI_STATE_DISABLED, // WiFi功能被禁用
     DISCONNECTED,      // STA模式下，已断开连接，正在等待重连超时
     CONNECTING,        // STA模式下，正在尝试连接
     CONNECTED_STA,     // STA模式下，已成功连接并获取IP

@@ -9,7 +9,7 @@
  * 它演示了如何与ESP-IDF的蓝牙API进行交互。
  */
 #include "Sys_BlueToothManager.h"
-#include "Debug.h"
+#include "Sys_Debug.h"
 #include "esp_gap_bt_api.h" // 引入经典蓝牙(BT Classic)的GAP API
 
 // 初始化静态单例指针
@@ -125,7 +125,7 @@ bool Sys_BlueToothManager::enableBlueTooth() {
     esp_err_t err = esp_bluedroid_enable();
     if (err != ESP_OK) {
         ESP_LOGE("BTMan", "Failed to enable Bluedroid: %s", esp_err_to_name(err));
-        _currentState = BlueToothState::DISABLED; // 启用失败，回到禁用状态
+        _currentState = BlueToothState::BLUETOOTH_STATE_DISABLED; // 启用失败，回到禁用状态
         return false;
     }
     return true;
@@ -135,7 +135,7 @@ bool Sys_BlueToothManager::enableBlueTooth() {
  * @brief 异步禁用蓝牙。
  */
 bool Sys_BlueToothManager::disableBlueTooth() {
-    if (_currentState == BlueToothState::DISABLED || _currentState == BlueToothState::DISABLING) {
+    if (_currentState == BlueToothState::BLUETOOTH_STATE_DISABLED || _currentState == BlueToothState::DISABLING) {
         return true;
     }
     ESP_LOGI("BTMan", "Disabling Bluedroid stack...");

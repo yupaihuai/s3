@@ -128,12 +128,19 @@ void Sys_FlashLogger::clearLogFile() {
  * @brief 将缓冲区数据写入文件的核心逻辑。
  */
 void Sys_FlashLogger::writeBufferToFile() {
-    // 步骤1：检查缓冲区是否有数据，避免不必要的加锁和文件打开。这是一个无锁的快速检查。
-    UBaseType_t items_waiting = 0;
-    if(_ring_buffer_handle) {
-        vRingbufferGetInfo(_ring_buffer_handle, NULL, NULL, NULL, &items_waiting);
+    // 步骤1：检查缓冲区是否有数据。
+    // 在 ESP-IDF v5.0+ 中, vRingbufferGetInfo 的 API 已改变。
+    // 使用第3个参数 uxUsed 来获取缓冲区中已用的字节数。
+    // 同时，变量类型建议使用 size_t。
+    size_t items_waiting = 0; 
+    if (_ring_buffer_handle) {
+        // 新版 API 调用，共5个参数 (handle + 4个指针)
+        // 我们只需要获取 "已使用" 的大小，所以其他指针传入 NULL
+        vRingbufferGetInfo(_ring_buffer_handle, NULL, &items_waiting, NULL, NULL);
     }
+
     if (items_waiting == 0) {
+        // 缓冲区为空，直接返回，避免不必要的文件操作
         return;
     }
 

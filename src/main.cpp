@@ -22,12 +22,12 @@
 #include "Sys_NvsManager.h"
 #include "Sys_Filesystem.h"
 #include "Sys_MemoryManager.h"
-#include "Sys_SettingsManager.h"
-#include "Sys_FlashLogger.h"      // [可选] 如果您希望尽早开始记录日志
-#include "Sys_WiFiManager.h"
-#include "Sys_BlueToothManager.h"
-#include "Sys_WebServer.h"
-#include "Sys_Tasks.h"
+// #include "Sys_SettingsManager.h"
+// #include "Sys_FlashLogger.h"      // [可选] 如果您希望尽早开始记录日志
+// #include "Sys_WiFiManager.h"
+// #include "Sys_BlueToothManager.h"
+// #include "Sys_WebServer.h"
+// #include "Sys_Tasks.h"
 
 // --- 调试与诊断工具 ---
 #include "Sys_Debug.h"
@@ -44,6 +44,7 @@ void setup() {
     Serial.begin(115200);
     delay(1000); // 给予串口监视器足够的时间来连接
     ESP_LOGI("Boot", "\n\n--- ESP32-S3 Modular Management System Booting ---");
+    ESP_LOGI("Boot", "--- Executing Phase 0: The Bedrock ---");
 
     // 2. [阶段0] 初始化硬件抽象层和基础服务
     ESP_LOGI("Boot", "Phase 0: Initializing Hardware Abstraction Layer...");
@@ -52,25 +53,25 @@ void setup() {
     Sys_MemoryManager::getInstance()->initializePools();
 
     // 3. [可选] 初始化Flash日志记录器。一旦文件系统就绪，就可以开始记录持久化日志。
-    Sys_FlashLogger::getInstance()->begin("/media/system.log");
-    Sys_FlashLogger::getInstance()->log("System boot sequence started.");
+    // Sys_FlashLogger::getInstance()->begin("/media/system.log");
+    // Sys_FlashLogger::getInstance()->log("System boot sequence started.");
 
     // 4. [阶段1] 初始化核心服务与配置管理
-    ESP_LOGI("Boot", "Phase 1: Initializing Core Services...");
-    Sys_SettingsManager::getInstance()->begin();
-    Sys_WiFiManager::getInstance()->begin();
-    Sys_BlueToothManager::getInstance()->begin(); // 初始化蓝牙管理器
+    // ESP_LOGI("Boot", "Phase 1: Initializing Core Services...");
+    // Sys_SettingsManager::getInstance()->begin();
+    // Sys_WiFiManager::getInstance()->begin();
+    // Sys_BlueToothManager::getInstance()->begin(); // 初始化蓝牙管理器
 
     // 5. [阶段2] 初始化网络通信管道
-    ESP_LOGI("Boot", "Phase 2: Initializing Communication Conduit...");
-    Sys_WebServer::getInstance()->begin();
+    // ESP_LOGI("Boot", "Phase 2: Initializing Communication Conduit...");
+    // Sys_WebServer::getInstance()->begin();
 
     // 6. [阶段3] 启动所有后台任务，将系统转换为多任务模式
-    ESP_LOGI("Boot", "Phase 3: Starting all FreeRTOS tasks...");
-    // 关键一步：将WebServer中的WebSocket实例指针传递给任务管理器
-    Sys_Tasks::begin(Sys_WebServer::getInstance()->getWebSocket());
+    // ESP_LOGI("Boot", "Phase 3: Starting all FreeRTOS tasks...");
+    // // 关键一步：将WebServer中的WebSocket实例指针传递给任务管理器
+    // Sys_Tasks::begin(Sys_WebServer::getInstance()->getWebSocket());
 
-    ESP_LOGI("Boot", "--- Boot sequence complete. System is now running. ---");
+    ESP_LOGI("Boot", "--- Phase 0 Initialization Complete. Running Diagnostics... ---");
 
     // [按需调试] 如果需要，可以在这里运行一次诊断报告
     #if CORE_DEBUG_MODE
@@ -80,6 +81,7 @@ void setup() {
     #endif
 
     // setup() 函数到此结束。之后，CPU控制权将完全由FreeRTOS调度器接管。
+    ESP_LOGI("Boot", "--- Phase 0 Test Finished. Entering loop. ---");
 }
 
 /**

@@ -15,6 +15,7 @@
 #include "esp_bt.h"
 #include "esp_bt_main.h"
 #include "esp_bt_device.h"
+#include "esp_gap_bt_api.h"  //负责定义蓝牙经典模式的 GAP 相关的 API、事件和参数类型。
 #include "Sys_SettingsManager.h" // 需要读取蓝牙配置
 
 /**
@@ -23,7 +24,7 @@
  */
 enum class BlueToothState {
     UNINITIALIZED,  // 未初始化，或初始化失败
-    DISABLED,       // 已初始化但被用户配置禁用
+    BLUETOOTH_STATE_DISABLED, // 已初始化但被用户配置禁用
     ENABLING,       // 正在启用中（异步过程）
     ENABLED,        // 已成功启用并正常运行
     DISABLING       // 正在禁用中（异步过程）

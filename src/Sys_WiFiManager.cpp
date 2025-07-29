@@ -45,7 +45,7 @@ void Sys_WiFiManager::applySettings() {
     
     // 重置永久失败状态和重试计数器，因为我们有了新的配置
     if (_currentState == WiFiState::FAILED_PERMANENTLY) {
-        _currentState = WiFiState::DISABLED;
+        _currentState = WiFiState::WIFI_STATE_DISABLED;
     }
     _sta_retry_count = 0;
 
@@ -71,7 +71,7 @@ void Sys_WiFiManager::applySettings() {
     
     if (!should_have_sta && !should_have_ap) {
         // 这是唯一一个可以直接设置的状态，因为它不会触发事件
-        _currentState = WiFiState::DISABLED;
+        _currentState = WiFiState::WIFI_STATE_DISABLED;
         ESP_LOGI("WiFiMan", "WiFi is now disabled.");
     }
 }
@@ -163,7 +163,7 @@ void Sys_WiFiManager::WiFiEvent(WiFiEvent_t event, arduino_event_info_t info) {
             ESP_LOGI("WiFiMan", "AP Mode Stopped.");
             // 如果STA也未连接，则为完全禁用
             if (!WiFi.isConnected()) {
-                _instance->_currentState = WiFiState::DISABLED;
+                _instance->_currentState = WiFiState::WIFI_STATE_DISABLED;
             } else {
                  _instance->_currentState = WiFiState::CONNECTED_STA;
             }
