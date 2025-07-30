@@ -62,12 +62,23 @@
 
 ## 4. 服务器推送通知 (Server Notifications)
 
-### Method: `log.message`
-- **Description**: 服务器推送的日志消息。
-- **Params**:
-  - `level` (string): "INFO", "WARN", "ERROR"
-  - `message` (string): 日志内容。
-  - `timestamp` (number): 时间戳。
+### Method: `log.batch`
+- **Description**: 服务器推送的一批（一个或多个）日志消息。
+- **Params**: `Array` - 一个JSON对象的数组，每个对象代表一条日志。
+  - `msg` (string): 日志内容。
+  - `lvl` (string, optional): 日志级别 (e.g., "I", "W", "E")。
+  - `ts` (number, optional): 时间戳。
+- **Example**:
+  ```json
+  {
+    "jsonrpc": "2.0",
+    "method": "log.batch",
+    "params": [
+      { "msg": "I (1234) WiFi: STA Connected. IP: 192.168.1.100" },
+      { "msg": "I (5678) Settings: Settings committed to NVS." }
+    ]
+  }
+  ```
 
 ### Method: `system.stateUpdate`
 - **Description**: 服务器推送的系统状态更新。

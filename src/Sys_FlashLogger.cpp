@@ -38,11 +38,25 @@ bool Sys_FlashLogger::begin(const char* log_filepath, size_t buffer_size, uint32
         ESP_LOGW("FlashLogger", "Flash Logger already initialized.");
         return true;
     }
-    
+
     DEBUG_LOG("Initializing Flash Logger...");
     _log_filepath = log_filepath;
     _flush_interval_ms = flush_interval_ms;
-    
+
+    // 在创建缓冲区之前，先确保日志目录存在
+    String log_dir = _log_filepath.substring(0, _log_filepath.lastIndexOf('/'));
+    if (FFat.exists(log_dir.c_str())) {
+         DEBUG_LOG("Log directory '%s' already exists.", log_dir.c_str());
+    } else {
+        DEBUG_LOG("Log directory '%s' not found, creating it...", log_dir.c_str());
+        if (FFat.mkdir(log_dir.c_str())) {
+            DEBUG_LOG("Log directory created successfully.");
+        } else {
+            ESP_LOGE("FlashLogger", "FATAL: Failed to create log directory '%s'!", log_dir.c_str());
+            return false; // 初始化失败
+        }
+    }
+
     // 步骤1：创建环形缓冲区。
     // 类型设为 RINGBUF_TYPE_NOSPLIT 确保日志条目在缓冲区中是连续的，不会被分割。
     _ring_buffer_handle = xRingbufferCreate(buffer_size, RINGBUF_TYPE_NOSPLIT);

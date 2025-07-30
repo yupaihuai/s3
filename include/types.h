@@ -39,6 +39,16 @@ struct JsonRpcRequest {
 };
 
 // --- 未来可以添加其他共享类型 ---
+
+/**
+ * @struct LogEntry_t
+ * @brief 定义了放入日志队列的轻量级日志条目。
+ * @details 仅包含格式化后的原始日志消息，将JSON打包工作转移到消费者任务。
+ */
+struct LogEntry_t {
+    char message[256]; // 存储格式化后的原始日志消息
+};
+
 /*
 struct SystemEvent {
     enum class Source { WIFI, BLUETOOTH, SENSOR };

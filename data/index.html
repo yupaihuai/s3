@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32-S3 管理系统 - 通信验证</title>
+    <link rel="stylesheet" href="bootstrap.min.css">
+    <style>
+        body {
+            padding: 1rem;
+        }
+        .status-card {
+            margin-top: 2rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <div class="card-header">
+                <h4>ESP32-S3 通信管道验证 (Phase 2)</h4>
+            </div>
+            <div class="card-body">
+                <h5 class="card-title">WebSocket 状态</h5>
+                <p id="ws-status" class="text-danger">未连接</p>
+                <hr>
+                <h5>服务器推送流 (Server Push)</h5>
+                <p>系统运行时间: <span id="uptime-value" class="fw-bold">--</span> ms</p>
+                <hr>
+                <h5>请求-响应流 (Request-Response)</h5>
+                <button id="reboot-btn" class="btn btn-danger">发送 "system.reboot" 命令</button>
+                <p class="mt-2">请求响应: <span id="rpc-response" class="text-muted">N/A</span></p>
+            </div>
+            <div class="card-footer text-muted">
+                等待与ESP32建立连接...
+            </div>
+        </div>
+    </div>
+
+    <script src="main.js"></script>
+</body>
+</html>

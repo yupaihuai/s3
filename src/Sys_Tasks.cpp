@@ -1,7 +1,7 @@
 /**
  * @file Sys_Tasks.cpp
  * @brief 系统核心任务的实现文件
- * @author [ANEAK] & AI Assistant
+ * @author [ANEAK]
  * @date [2025/7]
  *
  * @details
@@ -43,86 +43,41 @@ EventGroupHandle_t xDataEventGroup = NULL;
 /**
  * @brief 自定义vprintf实现，用于重定向ESP-IDF日志。
  * @details
- *  - 将原始日志输出到物理串口。
- *  - 将日志格式化为JSON RPC 2.0通知。
- *  - 将JSON非阻塞地发送到xLogQueue。
- *  - 触发事件组，唤醒WebSocket推送任务。
+ *  - [优化] 职责单一化：仅将格式化后的原始日志字符串放入队列。
+ *  - [优化] 性能：不在此处进行任何JSON操作或复杂的字符串解析。
  * @param fmt 格式化字符串。
  * @param args 可变参数列表。
  * @return int 写入串口的字节数。
  */
 static int custom_log_vprintf(const char *fmt, va_list args) {
-    // 步骤1: 格式化日志到临时缓冲区并发送到物理串口
+    // 步骤1: 格式化日志到临时缓冲区并发送到物理串口，保证本地调试不受影响
     char buffer[256];
     int len = vsnprintf(buffer, sizeof(buffer), fmt, args);
     if (len > 0) {
         Serial.write((uint8_t*)buffer, len);
     }
 
-    // 步骤2: 解析日志级别和标签 (这是一个简化的解析)
-    // ESP-IDF日志格式通常是: "L (timestamp) tag: message"
-    // 例如: "I (1234) WiFi: Connecting..."
-    const char* level_str = "INFO";
-    const char* tag_str = "unknown";
-    char message_content[200];
-
-    // 尝试从原始日志中提取信息
-    char level_char = ' ';
-    uint32_t timestamp = 0;
-    char tag_buffer[20] = {0};
-    
-    // sscanf返回成功匹配和赋值的项数
-    if (sscanf(buffer, "%c (%u) %19[^:]:", &level_char, &timestamp, tag_buffer) >= 3) {
-        tag_str = tag_buffer;
-        // 找到冒号后的消息体
-        const char* msg_start = strchr(buffer, ':');
-        if (msg_start && *(msg_start + 1)) {
-            strncpy(message_content, msg_start + 2, sizeof(message_content) - 1);
-            message_content[sizeof(message_content) - 1] = '\0';
-            // 移除末尾的换行符
-            char* newline = strrchr(message_content, '\n');
-            if (newline) *newline = '\0';
-            newline = strrchr(message_content, '\r');
-            if (newline) *newline = '\0';
-        } else {
-            strncpy(message_content, buffer, sizeof(message_content) - 1);
-            message_content[sizeof(message_content) - 1] = '\0';
+    // 步骤2: 创建一个轻量级的日志条目
+    LogEntry_t log_entry;
+    // 移除末尾的换行符，因为它们通常由日志宏自动添加
+    if (len > 0 && (buffer[len - 1] == '\n' || buffer[len - 1] == '\r')) {
+        buffer[len - 1] = '\0';
+        if (len > 1 && (buffer[len - 2] == '\r' || buffer[len - 2] == '\n')) {
+            buffer[len - 2] = '\0';
         }
-
-        switch (level_char) {
-            case 'E': level_str = "ERROR"; break;
-            case 'W': level_str = "WARN";  break;
-            case 'I': level_str = "INFO";  break;
-            case 'D': level_str = "DEBUG"; break;
-            case 'V': level_str = "VERBOSE"; break;
-        }
-    } else {
-        // 如果解析失败，使用整个原始缓冲区作为消息
-        strncpy(message_content, buffer, sizeof(message_content) - 1);
-        message_content[sizeof(message_content) - 1] = '\0';
     }
+    strncpy(log_entry.message, buffer, sizeof(log_entry.message) - 1);
+    log_entry.message[sizeof(log_entry.message) - 1] = '\0'; // 确保null结尾
 
-    // 步骤3: 构建JSON RPC 2.0通知
-    JsonDocument doc;
-    doc["jsonrpc"] = "2.0";
-    doc["method"] = "log.message";
-    JsonObject params = doc["params"].to<JsonObject>();
-    params["level"] = level_str;
-    params["tag"] = tag_str;
-    params["message"] = message_content;
-    params["timestamp"] = timestamp > 0 ? timestamp : millis();
-
-    char jsonBuffer[512];
-    serializeJson(doc, jsonBuffer, sizeof(jsonBuffer));
-
-    // 步骤4: 发送到队列并触发事件
+    // 步骤3: [关键] 快速将原始数据入队，不阻塞
     if (xLogQueue != NULL) {
-        if (xQueueSend(xLogQueue, &jsonBuffer, 0) == pdPASS) {
+        if (xQueueSend(xLogQueue, &log_entry, 0) == pdPASS) {
+            // 仅当队列未满时才设置事件位，避免在队列满时无谓地频繁唤醒Pusher任务
             if (xDataEventGroup != NULL) {
                 xEventGroupSetBits(xDataEventGroup, BIT_LOG_QUEUE_READY);
             }
         }
-        // 如果队列已满，日志将被静默丢弃，以避免在日志函数中阻塞
+        // 如果队列已满，日志将被静默丢弃，不进行任何操作
     }
 
     return len;
@@ -141,7 +96,7 @@ void Sys_Tasks::begin(AsyncWebSocket* webSocket) {
     // 步骤 1: 创建通信句柄
     xCommandQueue = xQueueCreate(10, sizeof(JsonRpcRequest));
     xStateQueue = xQueueCreate(20, sizeof(char[1024]));
-    xLogQueue = xQueueCreate(30, sizeof(char[512])); // [新增] 创建日志队列
+    xLogQueue = xQueueCreate(30, sizeof(LogEntry_t)); // [优化] 队列现在存放轻量级结构体
     xDataEventGroup = xEventGroupCreate();
 
     if (!xCommandQueue || !xStateQueue || !xDataEventGroup || !xLogQueue) {
@@ -189,15 +144,21 @@ void Sys_Tasks::begin(AsyncWebSocket* webSocket) {
 void Sys_Tasks::taskWorkerLoop(void* parameter) {
     ESP_LOGI(TASK_WORKER_NAME, "Task starting... Now monitored by TWDT.");
     JsonRpcRequest request;
+    const TickType_t xBlockTime = pdMS_TO_TICKS(10000); // 等待10秒，小于15秒的看门狗超时
 
     for (;;) {
-        // [优化] 每次循环前“喂狗”，表示任务还活着
-        esp_task_wdt_reset();
-
-        if (xQueueReceive(xCommandQueue, &request, portMAX_DELAY) == pdPASS) {
+        // 1. 尝试从队列接收命令，但最多只阻塞10秒
+        if (xQueueReceive(xCommandQueue, &request, xBlockTime) == pdPASS) {
+            // 如果接收到命令，则处理它
             DEBUG_LOG("Worker received RPC method: %s from client #%u", request.method, request.client_id);
             processJsonRpcRequest(request);
+        } else {
+            // 如果10秒内没有命令，队列接收超时返回，打印一条调试信息
+            DEBUG_LOG("Worker queue timed out, no command received.");
         }
+
+        // 2. 无论是否收到命令，循环到这里都会喂狗，确保任务存活
+        esp_task_wdt_reset();
     }
 }
 
@@ -248,9 +209,10 @@ void Sys_Tasks::taskSystemMonitorLoop(void* parameter) {
 
 /**
  * @brief Task_WebSocketPusher 的核心循环函数。
+ * @details [优化] 实现了日志的批处理和超时发送机制。
  */
 void Sys_Tasks::taskWebSocketPusherLoop(void* parameter) {
-    ESP_LOGI(TASK_PUSHER_NAME, "Task starting... Now handles NOTIFICATIONS ONLY.");
+    ESP_LOGI(TASK_PUSHER_NAME, "Task starting... Now handles batched notifications.");
     AsyncWebSocket* webSocket = (AsyncWebSocket*)parameter;
 
     if (!webSocket) {
@@ -258,35 +220,57 @@ void Sys_Tasks::taskWebSocketPusherLoop(void* parameter) {
         vTaskDelete(NULL);
     }
     
-    char messageBuffer[1024];
+    char stateMessageBuffer[1024];
+    LogEntry_t log_entry;
+    const TickType_t max_block_time = pdMS_TO_TICKS(500); // 设置一个500ms的超时
 
     for (;;) {
+        // 等待事件，但最多只等 max_block_time
         const EventBits_t bits = xEventGroupWaitBits(
             xDataEventGroup,
             BIT_STATE_QUEUE_READY | BIT_LOG_QUEUE_READY,
-            pdTRUE, pdFALSE, portMAX_DELAY);
+            pdTRUE, // 在退出时清除事件位
+            pdFALSE, // 等待任何一个事件位
+            max_block_time);
 
-        // 只有在有客户端连接时才处理推送
+        // 检查是否有客户端连接
         if (webSocket->count() == 0) {
             // 清空所有队列，防止消息堆积
-            while (xQueueReceive(xStateQueue, &messageBuffer, 0) == pdPASS) {}
-            while (xQueueReceive(xLogQueue, &messageBuffer, 0) == pdPASS) {}
+            while (xQueueReceive(xStateQueue, &stateMessageBuffer, 0) == pdPASS) {}
+            while (xQueueReceive(xLogQueue, &log_entry, 0) == pdPASS) {}
             continue; // 跳过本次推送
         }
 
+        // --- 处理状态队列 (保持原样，单个发送) ---
         if (bits & BIT_STATE_QUEUE_READY) {
             DEBUG_LOG("Pusher woken by state queue event.");
-            // 处理状态队列
-            while (xQueueReceive(xStateQueue, &messageBuffer, 0) == pdPASS) {
-                webSocket->textAll(messageBuffer);
+            while (xQueueReceive(xStateQueue, &stateMessageBuffer, 0) == pdPASS) {
+                webSocket->textAll(stateMessageBuffer);
             }
         }
 
-        if (bits & BIT_LOG_QUEUE_READY) {
-            DEBUG_LOG("Pusher woken by log queue event.");
-            // 处理日志队列
-            while (xQueueReceive(xLogQueue, &messageBuffer, 0) == pdPASS) {
-                webSocket->textAll(messageBuffer);
+        // --- [优化] 处理日志队列 (批处理) ---
+        if (uxQueueMessagesWaiting(xLogQueue) > 0) {
+            DEBUG_LOG("Pusher processing log queue...");
+            
+            JsonDocument batch_doc;
+            batch_doc["jsonrpc"] = "2.0";
+            batch_doc["method"] = "log.batch";
+            JsonArray params = batch_doc["params"].to<JsonArray>();
+
+            const int MAX_LOGS_PER_BATCH = 20;
+            int logs_in_batch = 0;
+            while (logs_in_batch < MAX_LOGS_PER_BATCH && xQueueReceive(xLogQueue, &log_entry, 0) == pdPASS) {
+                JsonObject log_obj = params.add<JsonObject>();
+                log_obj["msg"] = log_entry.message;
+                logs_in_batch++;
+            }
+
+            if (logs_in_batch > 0) {
+                String batch_string;
+                serializeJson(batch_doc, batch_string);
+                webSocket->textAll(batch_string);
+                DEBUG_LOG("Sent a batch of %d logs.", logs_in_batch);
             }
         }
     }
