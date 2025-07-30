@@ -11,6 +11,7 @@
  */
 #pragma once
 #include <stdint.h> // For uint32_t
+#include <functional> // For std::function
 
 /**
  * @struct JsonRpcRequest
@@ -29,6 +30,12 @@ struct JsonRpcRequest {
 
     /** @brief 携带JSON RPC的`params`对象的JSON字符串。*/
     char params[512] = "";
+    /**
+     * @brief 响应闭包，用于Task_Worker直接回调，将响应发回给正确的客户端。
+     * @details 定义一个响应函数类型：参数为JSON字符串，返回值为void。
+     */
+    using ResponseCallback = std::function<void(const char* json_response)>;
+    ResponseCallback response_cb;
 };
 
 // --- 未来可以添加其他共享类型 ---

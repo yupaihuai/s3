@@ -30,6 +30,8 @@
 extern QueueHandle_t xCommandQueue;
 /** @brief 状态队列：用于从后台任务（如Task_SystemMonitor）收集需要推送到前端的状态信息。*/
 extern QueueHandle_t xStateQueue;
+/** @brief 日志队列：用于从日志系统收集需要推送到前端的日志消息。*/
+extern QueueHandle_t xLogQueue;
 /** @brief 数据事件组：用于高效地通知Task_WebSocketPusher有新的数据需要推送，避免轮询队列。*/
 extern EventGroupHandle_t xDataEventGroup;
 

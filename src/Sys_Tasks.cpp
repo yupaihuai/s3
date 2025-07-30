@@ -22,17 +22,112 @@
 #include "Sys_WiFiManager.h"
 #include "Sys_BlueToothManager.h"
 #include "Sys_Diagnostics.h"
+#include "Sys_FlashLogger.h"      // [新增] 引入闪存日志模块
 
 // --- 第三方库依赖 ---
 #include "ArduinoJson.h"
 
 // --- ESP-IDF 核心依赖 ---
 #include "esp_task_wdt.h" // [优化] 引入任务看门狗头文件
+#include "esp_log.h"      // [新增] 引入日志重定向所需的头文件
+#include <cstdarg>        // [新增] 引入 va_list
 
 // --- 全局通信句柄的定义 ---
 QueueHandle_t xCommandQueue = NULL;
 QueueHandle_t xStateQueue = NULL;
+QueueHandle_t xLogQueue = NULL; // [新增] 日志队列
 EventGroupHandle_t xDataEventGroup = NULL;
+
+// --- 日志重定向实现 ---
+
+/**
+ * @brief 自定义vprintf实现，用于重定向ESP-IDF日志。
+ * @details
+ *  - 将原始日志输出到物理串口。
+ *  - 将日志格式化为JSON RPC 2.0通知。
+ *  - 将JSON非阻塞地发送到xLogQueue。
+ *  - 触发事件组，唤醒WebSocket推送任务。
+ * @param fmt 格式化字符串。
+ * @param args 可变参数列表。
+ * @return int 写入串口的字节数。
+ */
+static int custom_log_vprintf(const char *fmt, va_list args) {
+    // 步骤1: 格式化日志到临时缓冲区并发送到物理串口
+    char buffer[256];
+    int len = vsnprintf(buffer, sizeof(buffer), fmt, args);
+    if (len > 0) {
+        Serial.write((uint8_t*)buffer, len);
+    }
+
+    // 步骤2: 解析日志级别和标签 (这是一个简化的解析)
+    // ESP-IDF日志格式通常是: "L (timestamp) tag: message"
+    // 例如: "I (1234) WiFi: Connecting..."
+    const char* level_str = "INFO";
+    const char* tag_str = "unknown";
+    char message_content[200];
+
+    // 尝试从原始日志中提取信息
+    char level_char = ' ';
+    uint32_t timestamp = 0;
+    char tag_buffer[20] = {0};
+    
+    // sscanf返回成功匹配和赋值的项数
+    if (sscanf(buffer, "%c (%u) %19[^:]:", &level_char, &timestamp, tag_buffer) >= 3) {
+        tag_str = tag_buffer;
+        // 找到冒号后的消息体
+        const char* msg_start = strchr(buffer, ':');
+        if (msg_start && *(msg_start + 1)) {
+            strncpy(message_content, msg_start + 2, sizeof(message_content) - 1);
+            message_content[sizeof(message_content) - 1] = '\0';
+            // 移除末尾的换行符
+            char* newline = strrchr(message_content, '\n');
+            if (newline) *newline = '\0';
+            newline = strrchr(message_content, '\r');
+            if (newline) *newline = '\0';
+        } else {
+            strncpy(message_content, buffer, sizeof(message_content) - 1);
+            message_content[sizeof(message_content) - 1] = '\0';
+        }
+
+        switch (level_char) {
+            case 'E': level_str = "ERROR"; break;
+            case 'W': level_str = "WARN";  break;
+            case 'I': level_str = "INFO";  break;
+            case 'D': level_str = "DEBUG"; break;
+            case 'V': level_str = "VERBOSE"; break;
+        }
+    } else {
+        // 如果解析失败，使用整个原始缓冲区作为消息
+        strncpy(message_content, buffer, sizeof(message_content) - 1);
+        message_content[sizeof(message_content) - 1] = '\0';
+    }
+
+    // 步骤3: 构建JSON RPC 2.0通知
+    JsonDocument doc;
+    doc["jsonrpc"] = "2.0";
+    doc["method"] = "log.message";
+    JsonObject params = doc["params"].to<JsonObject>();
+    params["level"] = level_str;
+    params["tag"] = tag_str;
+    params["message"] = message_content;
+    params["timestamp"] = timestamp > 0 ? timestamp : millis();
+
+    char jsonBuffer[512];
+    serializeJson(doc, jsonBuffer, sizeof(jsonBuffer));
+
+    // 步骤4: 发送到队列并触发事件
+    if (xLogQueue != NULL) {
+        if (xQueueSend(xLogQueue, &jsonBuffer, 0) == pdPASS) {
+            if (xDataEventGroup != NULL) {
+                xEventGroupSetBits(xDataEventGroup, BIT_LOG_QUEUE_READY);
+            }
+        }
+        // 如果队列已满，日志将被静默丢弃，以避免在日志函数中阻塞
+    }
+
+    return len;
+}
+
 
 // [优化] 定义看门狗超时时间（秒）
 static constexpr const uint32_t TASK_WDT_TIMEOUT_S = 15;
@@ -46,14 +141,19 @@ void Sys_Tasks::begin(AsyncWebSocket* webSocket) {
     // 步骤 1: 创建通信句柄
     xCommandQueue = xQueueCreate(10, sizeof(JsonRpcRequest));
     xStateQueue = xQueueCreate(20, sizeof(char[1024]));
+    xLogQueue = xQueueCreate(30, sizeof(char[512])); // [新增] 创建日志队列
     xDataEventGroup = xEventGroupCreate();
 
-    if (!xCommandQueue || !xStateQueue || !xDataEventGroup) {
+    if (!xCommandQueue || !xStateQueue || !xDataEventGroup || !xLogQueue) {
         ESP_LOGE("Tasks", "FATAL: Failed to create communication handles!");
         return;
     }
 
-    // 步骤 2: [优化] 初始化任务看门狗
+    // 步骤 2: [新增] 重定向日志输出
+    ESP_LOGI("Tasks", "Redirecting system logs to WebSocket...");
+    esp_log_set_vprintf(&custom_log_vprintf);
+
+    // 步骤 3: [优化] 初始化任务看门狗
     ESP_LOGI("Tasks", "Initializing Task Watchdog Timer with %d seconds timeout.", TASK_WDT_TIMEOUT_S);
     ESP_ERROR_CHECK(esp_task_wdt_init(TASK_WDT_TIMEOUT_S, true)); // true 表示 panic on timeout
     
@@ -61,7 +161,7 @@ void Sys_Tasks::begin(AsyncWebSocket* webSocket) {
     ESP_ERROR_CHECK(esp_task_wdt_add(NULL)); 
     esp_task_wdt_reset();
 
-    // 步骤 3: 创建并启动所有后台任务
+    // 步骤 4: 创建并启动所有后台任务
     TaskHandle_t worker_handle;
     xTaskCreatePinnedToCore(taskWorkerLoop, TASK_WORKER_NAME, TASK_WORKER_STACK_SIZE, NULL, TASK_WORKER_PRIORITY, &worker_handle, TASK_WORKER_CORE);
     xTaskCreatePinnedToCore(taskSystemMonitorLoop, TASK_MONITOR_NAME, TASK_MONITOR_STACK_SIZE, NULL, TASK_MONITOR_PRIORITY, NULL, TASK_MONITOR_CORE);
@@ -150,7 +250,7 @@ void Sys_Tasks::taskSystemMonitorLoop(void* parameter) {
  * @brief Task_WebSocketPusher 的核心循环函数。
  */
 void Sys_Tasks::taskWebSocketPusherLoop(void* parameter) {
-    ESP_LOGI(TASK_PUSHER_NAME, "Task starting...");
+    ESP_LOGI(TASK_PUSHER_NAME, "Task starting... Now handles NOTIFICATIONS ONLY.");
     AsyncWebSocket* webSocket = (AsyncWebSocket*)parameter;
 
     if (!webSocket) {
@@ -166,33 +266,28 @@ void Sys_Tasks::taskWebSocketPusherLoop(void* parameter) {
             BIT_STATE_QUEUE_READY | BIT_LOG_QUEUE_READY,
             pdTRUE, pdFALSE, portMAX_DELAY);
 
-        // [优化] 只有在有客户端连接时才处理推送
+        // 只有在有客户端连接时才处理推送
         if (webSocket->count() == 0) {
-            // 清空队列，防止消息堆积
+            // 清空所有队列，防止消息堆积
             while (xQueueReceive(xStateQueue, &messageBuffer, 0) == pdPASS) {}
+            while (xQueueReceive(xLogQueue, &messageBuffer, 0) == pdPASS) {}
             continue; // 跳过本次推送
         }
 
         if (bits & BIT_STATE_QUEUE_READY) {
             DEBUG_LOG("Pusher woken by state queue event.");
+            // 处理状态队列
             while (xQueueReceive(xStateQueue, &messageBuffer, 0) == pdPASS) {
-                // 检查消息是响应还是通知
-                JsonDocument doc;
-                deserializeJson(doc, messageBuffer);
-                if (!doc["id"].isNull()) { // 这是一个响应
-                    uint32_t client_id = doc["client_id"];
-                    doc.remove("client_id"); // 从最终发送的JSON中移除内部client_id
-                    String response;
-                    serializeJson(doc, response);
-                    webSocket->text(client_id, response);
-                } else { // 这是一个通知
-                    webSocket->textAll(messageBuffer);
-                }
+                webSocket->textAll(messageBuffer);
             }
         }
 
         if (bits & BIT_LOG_QUEUE_READY) {
-            // ... 未来的日志队列处理逻辑 ...
+            DEBUG_LOG("Pusher woken by log queue event.");
+            // 处理日志队列
+            while (xQueueReceive(xLogQueue, &messageBuffer, 0) == pdPASS) {
+                webSocket->textAll(messageBuffer);
+            }
         }
     }
 }
@@ -208,18 +303,15 @@ void Sys_Tasks::taskWebSocketPusherLoop(void* parameter) {
  * @param result 要包含在响应中的`result`字段的JSON文档。
  */
 static void sendRpcResult(const JsonRpcRequest& request, JsonDocument& result) {
-    JsonDocument response_doc;
-    response_doc["jsonrpc"] = "2.0";
-    response_doc["result"] = result.as<JsonVariant>();
-    response_doc["id"] = request.id;
-    response_doc["client_id"] = request.client_id; // 内部使用，用于pusher任务路由
-
-    char jsonBuffer[1024];
-    serializeJson(response_doc, jsonBuffer, sizeof(jsonBuffer));
-    if (xQueueSend(xStateQueue, &jsonBuffer, 0) == pdPASS) {
-        xEventGroupSetBits(xDataEventGroup, BIT_STATE_QUEUE_READY);
-    } else {
-        ESP_LOGW(TASK_WORKER_NAME, "State queue full. RPC response dropped for method %s.", request.method);
+    if (request.response_cb) {
+        JsonDocument response_doc;
+        response_doc["jsonrpc"] = "2.0";
+        response_doc["result"] = result.as<JsonVariant>();
+        response_doc["id"] = request.id;
+        
+        String response_str;
+        serializeJson(response_doc, response_str);
+        request.response_cb(response_str.c_str());
     }
 }
 
@@ -227,18 +319,17 @@ static void sendRpcResult(const JsonRpcRequest& request, JsonDocument& result) {
  * @brief 响应一个JSON RPC错误的辅助函数。
  */
 static void sendRpcError(const JsonRpcRequest& request, int code, const char* message) {
-    JsonDocument response_doc;
-    response_doc["jsonrpc"] = "2.0";
-    JsonObject error_obj = response_doc["error"].to<JsonObject>();
-    error_obj["code"] = code;
-    error_obj["message"] = message;
-    response_doc["id"] = request.id;
-    response_doc["client_id"] = request.client_id;
+    if (request.response_cb) {
+        JsonDocument response_doc;
+        response_doc["jsonrpc"] = "2.0";
+        JsonObject error_obj = response_doc["error"].to<JsonObject>();
+        error_obj["code"] = code;
+        error_obj["message"] = message;
+        response_doc["id"] = request.id;
 
-    char jsonBuffer[256];
-    serializeJson(response_doc, jsonBuffer, sizeof(jsonBuffer));
-    if (xQueueSend(xStateQueue, &jsonBuffer, 0) == pdPASS) {
-        xEventGroupSetBits(xDataEventGroup, BIT_STATE_QUEUE_READY);
+        String response_str;
+        serializeJson(response_doc, response_str);
+        request.response_cb(response_str.c_str());
     }
 }
 
@@ -249,18 +340,28 @@ void Sys_Tasks::processJsonRpcRequest(const JsonRpcRequest& request) {
 
     // --- 系统命令 ---
     if (strcmp(request.method, "system.reboot") == 0) {
+        Sys_FlashLogger::getInstance()->log("[Worker]", "Received reboot command. Restarting...");
         JsonDocument result_doc;
         result_doc["status"] = "rebooting";
         sendRpcResult(request, result_doc);
-        delay(1000);
+        
+        // [重要] 重启前强制刷写日志
+        Sys_FlashLogger::getInstance()->flush();
+        vTaskDelay(pdMS_TO_TICKS(200)); // 给予后台任务一点时间来完成写入
+        
         ESP.restart();
     }
     else if (strcmp(request.method, "system.factoryReset") == 0) {
         JsonDocument result_doc;
         result_doc["status"] = "resetting";
         sendRpcResult(request, result_doc);
+        Sys_FlashLogger::getInstance()->log("[Worker]", "Received factory reset command. Resetting...");
         Sys_SettingsManager::getInstance()->factoryReset();
-        delay(1000);
+
+        // [重要] 重启前强制刷写日志
+        Sys_FlashLogger::getInstance()->flush();
+        vTaskDelay(pdMS_TO_TICKS(200)); // 给予后台任务一点时间来完成写入
+
         ESP.restart();
     }
     // --- 设置管理 ---

@@ -10,6 +10,7 @@
  */
 #include "Sys_BlueToothManager.h"
 #include "Sys_Debug.h"
+#include "Sys_FlashLogger.h" // [新增] 引入闪存日志模块
 
 // 初始化静态单例指针
 Sys_BlueToothManager* Sys_BlueToothManager::_instance = nullptr;
@@ -107,6 +108,8 @@ BlueToothState Sys_BlueToothManager::getCurrentState() const {
  */
 void Sys_BlueToothManager::onConnect(NimBLEServer* pServer) {
     ESP_LOGI("BTMan", "BLE Client Connected.");
+    // [日志] 记录客户端连接事件
+    Sys_FlashLogger::getInstance()->log("[Bluetooth]", "Client connected.");
     _currentState = BlueToothState::CONNECTED;
 }
 
@@ -115,6 +118,8 @@ void Sys_BlueToothManager::onConnect(NimBLEServer* pServer) {
  */
 void Sys_BlueToothManager::onDisconnect(NimBLEServer* pServer) {
     ESP_LOGI("BTMan", "BLE Client Disconnected.");
+    // [日志] 记录客户端断开连接事件
+    Sys_FlashLogger::getInstance()->log("[Bluetooth]", "Client disconnected.");
     // 断开连接后，根据配置决定是返回禁用状态还是重新开始广播
     const auto& settings = Sys_SettingsManager::getInstance()->getSettings();
     if (settings.bluetooth_enabled) {

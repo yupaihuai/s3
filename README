@@ -1,0 +1,140 @@
+阶段性实施方案 (Phased Implementation Plan) - 实施日志与计划
+
+阶段 0：基础环境核心框架与诊断系统 (The Bedrock)
+目标: 验证硬件驱动、内存系统和文件系统均按设计正确初始化，为上层软件提供一个稳定可靠的运行平台。
+
+当前状态: 已高质量完成。 main.cpp 中的初始化顺序正确，且各底层模块 (Sys_NvsManager, Sys_Filesystem, Sys_MemoryManager, Sys_Diagnostics) 均已实现。
+
+验证方法:
+
+编译并烧录当前固件。
+
+打开 platformio.ini 中配置的串口监视器 (monitor_port = COM4)。
+
+观察启动日志，应能看到 [Boot] 流程中，NVS、Settings、Memory、Filesystem、Logger 等模块按顺序成功初始化的日志。
+
+在调试模式 (CORE_DEBUG_MODE=1) 下，应能看到 [Diagnostics] 模块打印的完整系统报告，包括芯片信息、内存、分区表和文件系统挂载情况，用于与设计规格进行比对。
+
+阶段 1：核心服务与任务调度 (The Engine)
+目标: 系统能够独立运行，并根据持久化的配置管理自身状态（如WiFi重连），所有核心后台任务都能按预期调度。
+
+当前状态: 已高质量完成。 Sys_SettingsManager, Sys_WiFiManager, Sys_BlueToothManager 和 Sys_Tasks 逻辑均已实现。
+
+验证方法:
+
+接续阶段0的验证，继续观察串口监视器。
+
+应看到 [Tasks] 日志，表明 Task_Worker, Task_SystemMonitor, Task_WebSocketPusher 已成功创建并运行在指定的Core 1上。
+
+Sys_WiFiManager 会根据 SystemSettings 中的默认SSID和密码 (esp32s3/12345678) 自动启动。
+
+如果开发环境中的WiFi网络配置与默认值匹配，应能看到WiFi连接成功并获取到IP地址的日志。
+
+如果WiFi配置不匹配，应能看到 [WiFiMan] 周期性尝试重连的日志。
+
+阶段 2：前后端通信管道 (The Conduit)
+目标: 验证从Web UI到 Task_Worker 再回到UI的完整JSON RPC通信链路畅通，为后续所有UI功能开发奠定基础。
+
+当前状态: 后端代码 (Sys_WebServer 和 Sys_Tasks) 已支持此链路。前端需要少量开发进行验证。
+
+实施与验证步骤:
+
+准备前端资源: 在 /data 目录下创建一个极简的 index.html 和 main.js 文件。
+
+前端JS实现 (main.js):
+
+编写连接到 ws://<esp32-ip>/ws 的WebSocket逻辑。
+
+监听 onopen 事件，在浏览器控制台打印“WebSocket Connected”，并接收服务器的 server.welcome 消息。
+
+监听 onmessage 事件，解析收到的JSON数据。在页面上创建一个 <span> 标签，用 system.stateUpdate 通知中的 uptime 值来更新其内容，以验证服务器推送流。
+
+在页面上创建一个“Reboot”按钮。为其添加点击事件监听器，当点击时，构造并发送一个JSON RPC请求: {"jsonrpc": "2.0", "method": "system.reboot", "id": 1}。
+
+链路验证:
+
+点击“Reboot”按钮后，在浏览器网络调试工具中，应能观察到reboot请求被发送。
+
+随后应能接收到来自服务器的响应 {"jsonrpc": "2.0", "result": {"status": "rebooting"}, "id": 1}。
+
+最后，ESP32设备应会重启，串口监视器会重新开始打印启动日志。
+
+验收标准: 点击网页上的“Reboot”按钮，设备能够接收指令、返回响应并成功重启。这证明了请求-响应流的完整链路是通畅的。
+
+阶段 3：高级功能与UI完善 (The Polish)
+目标: 在已验证的通信框架上，填充具体的功能模块，实现设计中的核心用户交互。
+
+当前状态: 后端模块接口和逻辑已全部完成，主要工作量在前端UI开发和前后端联调。
+
+实施清单 (Checklist for Engineer):
+
+实现 仪表盘 界面 (Dashboard)
+
+[ ] UI: 按照蓝图V5.5的设计，使用Bootstrap 5构建响应式布局（卡片、信息列表、操作按钮、日志控制台）。
+
+[ ] 数据加载: 页面加载时，通过WebSocket发送 settings.get 命令，并用返回结果填充UI中所有与配置相关的部分。
+
+[ ] 实时更新: 持续监听 system.stateUpdate 通知，实时更新“运行时间”、“堆内存”等卡片信息。
+
+[ ] 操作按钮:
+
+实现“重启”、“恢复出厂设置”按钮，绑定 system.reboot 和 system.factoryReset 命令，并必须使用Bootstrap Modal进行二次确认。
+
+实现“调试模式”的Toggle开关，绑定 settings.saveDebug 命令（需在 API_SPEC.md 和 Sys_Tasks.cpp 中新增此命令），并用Toast组件提示保存结果。
+
+实现 WiFi管理 界面
+
+[ ] UI: 按照蓝图设计，实现总开关(Toggle)、模式切换(Radio)、配置表单(SSID, Password)和可折叠的静态IP设置。
+
+[ ] 数据流: 进入页面时发送 settings.get，用返回结果填充整个表单。点击“保存”时，序列化表单数据，调用 settings.saveWiFi 命令。
+
+[ ] WiFi扫描: 点击“扫描”按钮，UI显示Spinner加载指示器；JS发送 wifi.scan 命令；JS监听 wifi.scanResult 通知，收到后用网络列表填充一个Modal；在Modal中点击某个网络，其SSID应被自动填入主表单的SSID输入框。
+
+实现 蓝牙管理 界面
+
+[ ] UI: 采用与WiFi模块类似的设计，实现总开关和广播名称设置表单。
+
+[ ] 数据流: 进入页面时发送 settings.get 填充表单。点击“保存”时，调用 settings.saveBluetooth 命令。
+
+实现 Web日志 系统 (前后端)
+
+[ ] 后端增强:
+
+在 Sys_Tasks.h 中声明一个新的 extern QueueHandle_t xLogQueue;。
+
+在 Sys_Tasks::begin() 中创建此队列 xLogQueue = xQueueCreate(...)。
+
+调用 esp_log_set_vprintf() 并提供一个自定义的vprintf函数。此函数负责将日志格式化为JSON（如{"method": "log.message", "params": {"level":"I", "msg":"..."}}），然后发送到 xLogQueue。
+
+修改 taskWebSocketPusherLoop，使其能同时等待并处理 xStateQueue 和 xLogQueue 的消息。
+
+[ ] 前端: 在仪表盘的日志控制台部分，JS监听 log.message 通知，根据消息中的 level 字段为日志条目添加不同的CSS class（如text-info, text-warning, text-danger），并实现自动滚屏。
+
+阶段 4：后期开发计划 (Future Development)
+当前状态: 概念规划阶段。
+
+实施建议: 当前坚实的架构将使这些功能的集成变得相对简单。
+
+USB摄像头模块:
+
+创建一个新的 Sys_CamManager 模块，负责初始化USB摄像头库，并在Core 0上创建 Task_ImageProcessor 任务。
+
+Task_ImageProcessor 捕获的视频帧可以放入 Sys_MemoryManager 管理的PSRAM内存池中，以避免内存碎片。
+
+条码识别结果可通过一个新的 xBarcodeQueue 队列发送给 Task_WebSocketPusher，由其广播给前端实时显示。
+
+视频流可通过在 Sys_WebServer 中新增一个 /stream 的HTTP端点来实现MJPEG流式传输。
+
+OTA管理模块:
+
+可利用 ESPAsyncWebServer 的文件上传功能接收固件文件，先保存到 ffat 分区。
+
+在上传完成后，后端进行固件校验（CRC或MD5），校验通过后才调用 esp_ota_... 系列API执行更新。
+
+更新进度可通过WebSocket通知实时推送到前端进度条。
+
+安全验证:
+
+在 Sys_WebServer 中添加会话管理逻辑。用户登录成功后，服务器生成一个会话令牌（Token）。
+
+后续所有需要认证的JSON RPC请求，客户端必须在参数中携带此令牌。Task_Worker 在处理这些命令前，先验证令牌的有效性。

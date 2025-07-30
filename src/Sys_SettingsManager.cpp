@@ -1,7 +1,7 @@
 /**
  * @file Sys_SettingsManager.cpp
  * @brief 系统设置管理器的实现文件
- * @author [ANEAK] & AI Assistant
+ * @author [ANEAK]
  * @date [2025/7]
  * 
  * @details
@@ -12,6 +12,7 @@
 #include "Sys_SettingsManager.h"
 #include "Sys_NvsManager.h" // 依赖底层NVS工具类
 #include "Sys_Debug.h"
+#include "Sys_FlashLogger.h" // [新增] 引入闪存日志模块
 
 /** @brief 当前固件期望的设置版本号。当`SystemSettings`结构体发生不兼容的改变时，必须增加此版本号。*/
 static constexpr const uint32_t CURRENT_SETTINGS_VERSION = 1;
@@ -96,7 +97,8 @@ bool Sys_SettingsManager::save() {
 
     if (Sys_NvsManager::writeBlob(NVS_NAMESPACE, NVS_KEY_BLOB, &_settings, sizeof(SystemSettings))) {
         ESP_LOGI("Settings", "Settings successfully committed to NVS.");
-        // 日志: 设置已成功提交到NVS。
+        // [日志] 记录设置已成功提交到NVS。
+        Sys_FlashLogger::getInstance()->log("[Settings]", "Settings committed to NVS.");
         _is_dirty = false;
         return true;
     } else {
@@ -143,6 +145,8 @@ void Sys_SettingsManager::factoryReset() {
     Sys_LockGuard lock(_mutex);
     ESP_LOGW("Settings", "Performing factory reset!");
     // 警告: 正在执行恢复出厂设置！
+    // [日志] 记录恢复出厂设置事件。
+    Sys_FlashLogger::getInstance()->log("[Settings]", "Factory reset performed.");
     Sys_NvsManager::eraseNamespace(NVS_NAMESPACE);
     loadDefaults();
     save();

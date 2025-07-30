@@ -15,6 +15,7 @@
 #include "FS.h"
 #include "LittleFS.h"
 #include "FFat.h"
+#include "Sys_FlashLogger.h" // [新增] 引入闪存日志模块
 
 /**
  * @class Sys_Filesystem
@@ -92,6 +93,8 @@ private:
             }
         } else {
             ESP_LOGE("FS", "FATAL: Formatting '%s' partition failed!", partition_label);
+            // [日志] 记录文件系统格式化失败的致命错误
+            Sys_FlashLogger::getInstance()->log("[FileSystem]", "FATAL: Formatting '%s' partition failed!", partition_label);
             return false;
         }
     }

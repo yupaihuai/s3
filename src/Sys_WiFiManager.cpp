@@ -6,6 +6,7 @@
  */
 #include "Sys_WiFiManager.h"
 #include "Sys_Debug.h"
+#include "Sys_FlashLogger.h" // [新增] 引入闪存日志模块
 
 // [优化] 定义重连相关的常量
 static constexpr const uint32_t RECONNECT_INTERVAL_MS = 10000; // 10秒重连间隔
@@ -180,15 +181,22 @@ void Sys_WiFiManager::WiFiEvent(WiFiEvent_t event, arduino_event_info_t info) {
             // 状态仍然是CONNECTING，直到获取IP
             break;
 
-        case ARDUINO_EVENT_WIFI_STA_GOT_IP:
-            ESP_LOGI("WiFiMan", "STA Got IP: %s", IPAddress(info.got_ip.ip_info.ip.addr).toString().c_str());
+        case ARDUINO_EVENT_WIFI_STA_GOT_IP: {
+            String ip = IPAddress(info.got_ip.ip_info.ip.addr).toString();
+            ESP_LOGI("WiFiMan", "STA Got IP: %s", ip.c_str());
+            // [日志] 记录STA连接成功事件
+            Sys_FlashLogger::getInstance()->log("[WiFi]", "STA Connected. IP: %s", ip.c_str());
             _instance->_sta_retry_count = 0; // 连接成功，重置重试计数器
             _instance->_currentState = WiFi.softAPgetStationNum() > 0 ? WiFiState::HOSTING_AP_STA : WiFiState::CONNECTED_STA;
             break;
+        }
 
         case ARDUINO_EVENT_WIFI_STA_DISCONNECTED: {
             wifi_err_reason_t reason = (wifi_err_reason_t)info.wifi_sta_disconnected.reason;
-            ESP_LOGW("WiFiMan", "STA Disconnected. Reason: %d (%s)", reason, WiFi.disconnectReasonName(reason));
+            const char* reason_name = WiFi.disconnectReasonName(reason);
+            ESP_LOGW("WiFiMan", "STA Disconnected. Reason: %d (%s)", reason, reason_name);
+            // [日志] 记录STA断开连接事件
+            Sys_FlashLogger::getInstance()->log("[WiFi]", "STA Disconnected. Reason: %s (%d)", reason_name, reason);
 
             // [优化] 智能重连逻辑
             // 检查是否是“永久性”错误
@@ -197,9 +205,11 @@ void Sys_WiFiManager::WiFiEvent(WiFiEvent_t event, arduino_event_info_t info) {
                 ESP_LOGW("WiFiMan", "Permanent-like failure. Retry attempt %d/%d.", _instance->_sta_retry_count, MAX_STA_RETRIES);
                 if (_instance->_sta_retry_count >= MAX_STA_RETRIES) {
                     ESP_LOGE("WiFiMan", "Max retries reached. Entering permanent failure state.");
+                    // [日志] 记录连接永久失败错误
+                    Sys_FlashLogger::getInstance()->log("[WiFi]", "ERROR: Max retries reached. Entering permanent failure state.");
                     _instance->_currentState = WiFiState::FAILED_PERMANENTLY;
                     // 在这里停止，不再尝试重连
-                    break; 
+                    break;
                 }
             }
             // 对于其他临时性断开或未达到重试上限的永久性错误，进入常规重连流程

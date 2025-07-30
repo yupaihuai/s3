@@ -129,7 +129,7 @@ void Sys_WebServer::handleFileUpload(AsyncWebServerRequest *request, const Strin
     }
 
     if (final) { // 文件上传结束
-        DEBUG_LOG("Upload End: %s, Total Size: %u", path.c_tr(), index + len);
+        DEBUG_LOG("Upload End: %s, Total Size: %u", path.c_str(), index + len);
         if (uploadFile) { uploadFile.close(); }
     }
 }
@@ -186,10 +186,21 @@ void Sys_WebServer::onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClien
                     serializeJson(doc["params"], rpcRequest.params, sizeof(rpcRequest.params));
                 }
 
+                // [新增] 创建响应闭包
+                rpcRequest.response_cb = [this, client_id = client->id()](const char* json_response) {
+                    // 检查WebSocket服务器和客户端是否仍然有效
+                    if (this->_ws.count() > 0 && this->_ws.hasClient(client_id)) {
+                        this->_ws.text(client_id, json_response);
+                    }
+                };
+
                 // 发送到命令队列
                 if (xQueueSend(xCommandQueue, &rpcRequest, pdMS_TO_TICKS(10)) != pdPASS) {
                     ESP_LOGE("WebServer", "Command queue full, dropping RPC request.");
-                    client->text("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32000,\"message\":\"Server busy, command queue full\"},\"id\":rpcRequest.id}");
+                    // 如果队列已满，也通过回调函数返回错误
+                    if (rpcRequest.response_cb) {
+                        rpcRequest.response_cb("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32000,\"message\":\"Server busy, command queue full\"},\"id\":null}");
+                    }
                 }
             }
             break;

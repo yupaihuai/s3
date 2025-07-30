@@ -33,6 +33,9 @@
 #include "Sys_Debug.h"
 #include "Sys_Diagnostics.h"
 
+// 定义固件版本号
+#define FIRMWARE_VERSION "5.5.1"
+
 /**
  * @brief 系统启动函数 (setup)
  *
@@ -90,6 +93,9 @@ void setup() {
     Sys_Tasks::begin(Sys_WebServer::getInstance()->getWebSocket());
 
     ESP_LOGI("Boot", "--- System Initialization Complete. Handing over to FreeRTOS... ---");
+
+    // [日志] 记录系统启动成功事件
+    Sys_FlashLogger::getInstance()->log("[Main]", "System booted successfully. Version: %s", FIRMWARE_VERSION);
 
     // [按需调试] 如果需要，可以在这里运行一次诊断报告
     #if CORE_DEBUG_MODE
