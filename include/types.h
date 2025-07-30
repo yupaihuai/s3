@@ -10,25 +10,25 @@
  * 避免重复定义和不明确的`extern`声明。
  */
 #pragma once
+#include <stdint.h> // For uint32_t
 
 /**
- * @struct Command
- * @brief 定义了从前端接口到Task_Worker的命令格式。
+ * @struct JsonRpcRequest
+ * @brief 定义了从前端接口到Task_Worker的JSON RPC 2.0请求的内部表示。
+ *        它被放入命令队列中，由Task_Worker消费。
  */
-struct Command {
-    // 命令类型枚举，清晰地定义了所有支持的命令。
-    enum Type {
-        SAVE_WIFI,          // 保存WiFi设置
-        SAVE_BLE,           // 保存蓝牙设置
-        SCAN_WIFI,          // 扫描WiFi网络
-        RUN_DIAGNOSTICS,    // 运行系统诊断
-        REBOOT,             // 重启设备
-        FACTORY_RESET       // 恢复出厂设置
-        // ... 未来可在此添加新命令 ...
-    };
+struct JsonRpcRequest {
+    /** @brief JSON RPC 请求的ID，用于匹配响应。对于通知，此ID可能无效或为0。*/
+    uint32_t id = 0;
 
-    Type type;
-    char payload[128] = ""; // 用于携带命令的附加数据，例如一个简短的JSON字符串。
+    /** @brief 发起请求的WebSocket客户端ID，用于定向响应。*/
+    uint32_t client_id = 0;
+
+    /** @brief JSON RPC 的方法名 (例如 "system.reboot", "settings.saveWiFi")。*/
+    char method[64] = "";
+
+    /** @brief 携带JSON RPC的`params`对象的JSON字符串。*/
+    char params[512] = "";
 };
 
 // --- 未来可以添加其他共享类型 ---

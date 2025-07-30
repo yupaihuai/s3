@@ -11,7 +11,7 @@
 #include "Sys_WebServer.h"
 #include "types.h"
 #include "Sys_Debug.h"
-#include "Sys_Tasks.h"        // 需要访问 xCommandQueue 和 Command 结构体
+#include "Sys_Tasks.h"        // 需要访问 xCommandQueue 和 JsonRpcRequest 结构体
 #include "Sys_Filesystem.h"   // 需要访问 LittleFS 和 FFat
 #include "Sys_SettingsManager.h"
 
@@ -58,57 +58,44 @@ void Sys_WebServer::begin() {
  * @brief 集中设置所有HTTP路由。
  */
 void Sys_WebServer::setupHttpRoutes() {
-    // --- API Endpoints ---
-    
-    // 注册一个处理JSON body的POST请求处理器
-    // 这是处理前端发来的JSON数据的标准、高效方式
-    auto jsonBodyHandler = new AsyncCallbackJsonWebHandler("/api/settings/save", handleSaveSettings);
-    _server.addHandler(jsonBodyHandler);
-    
-    // 注册GET请求API
-    _server.on("/api/settings/get", HTTP_GET, handleGetSettings);
-    _server.on("/api/wifi/scan", HTTP_GET, handleScanWiFi);
-    
     // --- 文件上传处理 ---
     // 所有POST到/upload的请求都会被这个处理器处理
-    _server.on("/upload", HTTP_POST, 
+    _server.on("/upload", HTTP_POST,
         // 上传成功后的响应回调
         [](AsyncWebServerRequest *request) {
             request->send(200, "text/plain", "Upload OK");
-        }, 
+        },
         // 文件块数据处理回调
         handleFileUpload
     );
 
-    // --- 静态文件服务 ---
-    // 根目录 ("/") 的文件从LittleFS的根目录提供
-    _server.serveStatic("/", LittleFS, "/")
-           .setCacheControl("max-age=600")      // 设置浏览器缓存600秒
-           .setDefaultFile("index.html");       // 默认文件为index.html
-
-    // "/media" 路径的文件从FFat的根目录提供
-    _server.serveStatic("/media", FFat, "/");
-
-    // --- Gzip内容协商优化 ---
-    // 当浏览器请求一个.css文件时，我们检查是否存在对应的.css.gz文件。
-    // 如果存在，则直接发送压缩过的版本，并告知浏览器内容是gzip编码的。
-    _server.on("*.js", HTTP_GET, [](AsyncWebServerRequest *request){
+    // --- 静态文件服务 (Gzip内容协商优化) ---
+    // 对所有静态资源请求进行拦截，优先提供.gz版本
+    _server.on("/*", HTTP_GET, [](AsyncWebServerRequest *request){
         String path = request->url();
+        if (path.endsWith("/")) path += "index.html";
+        
+        String contentType = "text/plain";
+        if (path.endsWith(".html")) contentType = "text/html";
+        else if (path.endsWith(".css")) contentType = "text/css";
+        else if (path.endsWith(".js")) contentType = "application/javascript";
+        
         if (LittleFS.exists(path + ".gz")) {
-            AsyncWebServerResponse *response = request->beginResponse(LittleFS, path + ".gz", "application/javascript");
+            AsyncWebServerResponse *response = request->beginResponse(LittleFS, path + ".gz", contentType);
             response->addHeader("Content-Encoding", "gzip");
             request->send(response);
         } else if (LittleFS.exists(path)) {
-            request->send(LittleFS, path, "application/javascript");
-        }
-        else {
-            request->send(404);
+            request->send(LittleFS, path, contentType);
+        } else {
+            handleNotFound(request);
         }
     });
-    // (可以为css, html等其他文件类型添加类似的规则)
+
+    // --- 媒体文件服务 ---
+    // "/media" 路径的文件从FFat的根目录提供
+    _server.serveStatic("/media", FFat, "/");
 
     // --- 404 Not Found 处理器 ---
-    // 当以上所有路由都不匹配时，此处理器将被调用
     _server.onNotFound(handleNotFound);
 }
 
@@ -121,61 +108,6 @@ void Sys_WebServer::cleanupClients() {
 }
 
 // --- HTTP Route Handlers (静态方法实现) ---
-
-void Sys_WebServer::handleGetSettings(AsyncWebServerRequest *request) {
-    // 只读操作，可以直接从SettingsManager的缓存中快速获取数据并返回，无需经过Task_Worker
-    const auto& settings = Sys_SettingsManager::getInstance()->getSettings();
-    
-    JsonDocument doc; // 使用ArduinoJson创建JSON
-    // 序列化所有需要返回给前端的设置
-    doc["wifi_ssid"] = settings.wifi_ssid;
-    doc["wifi_mode"] = (int)settings.wifi_mode;
-    doc["bluetooth_enabled"] = settings.bluetooth_enabled;
-    doc["bluetooth_name"] = settings.bluetooth_name;
-    // ...
-
-    String jsonString;
-    serializeJson(doc, jsonString);
-    request->send(200, "application/json", jsonString);
-}
-
-void Sys_WebServer::handleSaveSettings(AsyncWebServerRequest *request, JsonVariant &json) {
-    // 写操作，可能会触发耗时动作（如重启WiFi），因此必须通过命令队列发给Task_Worker
-    JsonDocument doc = json.as<JsonDocument>();
-    Command cmd;
-
-    // 根据JSON负载的内容，判断是哪种保存操作
-    if (doc.containsKey("wifi_ssid")) {
-        cmd.type = Command::SAVE_WIFI;
-    } else if (doc.containsKey("bluetooth_name")) {
-        cmd.type = Command::SAVE_BLE;
-    } else {
-        request->send(400, "application/json", "{\"success\":false, \"message\":\"Invalid settings format.\"}");
-        return;
-    }
-        
-    // 将收到的完整JSON作为字符串负载发送给Worker
-    serializeJson(doc, cmd.payload, sizeof(cmd.payload));
-    
-    if (xQueueSend(xCommandQueue, &cmd, 0) == pdPASS) {
-        request->send(202, "application/json", "{\"success\":true, \"message\":\"Settings update command queued.\"}");
-    } else {
-        request->send(503, "application/json", "{\"success\":false, \"message\":\"Command queue full.\"}");
-    }
-}
-
-void Sys_WebServer::handleScanWiFi(AsyncWebServerRequest *request) {
-    // WiFi扫描是典型的耗时操作，必须交由Task_Worker处理
-    Command cmd;
-    cmd.type = Command::SCAN_WIFI;
-    
-    if (xQueueSend(xCommandQueue, &cmd, 0) == pdPASS) {
-        // 立即返回“202 Accepted”，表示请求已被接受，结果将异步推送
-        request->send(202, "application/json", "{\"success\":true, \"message\":\"WiFi scan initiated.\"}");
-    } else {
-        request->send(503, "application/json", "{\"success\":false, \"message\":\"Command queue full.\"}");
-    }
-}
 
 void Sys_WebServer::handleFileUpload(AsyncWebServerRequest *request, const String& filename, size_t index, uint8_t *data, size_t len, bool final) {
     static File uploadFile;
@@ -213,43 +145,57 @@ void Sys_WebServer::handleNotFound(AsyncWebServerRequest *request) {
     }
 }
 
-// --- WebSocket 事件处理器 ---
+// --- WebSocket 事件处理器 (JSON RPC 2.0) ---
 void Sys_WebServer::onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
     switch (type) {
         case WS_EVT_CONNECT:
-            // 客户端连接成功
             ESP_LOGI("WebSocket", "Client #%u connected from %s", client->id(), client->remoteIP().toString().c_str());
-            client->text("{\"type\":\"welcome\",\"message\":\"Connection established!\"}");
+            client->text("{\"jsonrpc\":\"2.0\",\"method\":\"server.welcome\",\"params\":{\"message\":\"Connection established!\"}}");
             break;
+
         case WS_EVT_DISCONNECT:
-            // 客户端断开连接
             ESP_LOGI("WebSocket", "Client #%u disconnected", client->id());
             break;
+
         case WS_EVT_DATA: {
-            // 收到数据帧
             AwsFrameInfo *info = (AwsFrameInfo*)arg;
-            // 只处理完整的TEXT类型数据帧
             if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
-                // 这是处理从前端发来的简单WebSocket命令的地方
+                
                 JsonDocument doc;
-                if (deserializeJson(doc, (const char*)data, len) == DeserializationError::Ok) {
-                    const char* command_str = doc["command"];
-                    if (command_str) {
-                         if (strcmp(command_str, "reboot") == 0) {
-                            Command cmd;
-                            cmd.type = Command::REBOOT;
-                            xQueueSend(xCommandQueue, &cmd, 0);
-                        }
-                        // ... 处理其他简单的WebSocket命令 ...
-                    }
-                } else {
-                    client->text("{\"type\":\"error\",\"message\":\"Invalid JSON received\"}");
+                DeserializationError error = deserializeJson(doc, (const char*)data, len);
+
+                if (error) {
+                    client->text("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32700,\"message\":\"Parse error\"},\"id\":null}");
+                    return;
+                }
+
+                // 验证JSON RPC 2.0格式
+                if (strcmp(doc["jsonrpc"], "2.0") != 0 || doc["method"].isNull()) {
+                    client->text("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"Invalid Request\"},\"id\":null}");
+                    return;
+                }
+
+                // 封装为内部命令结构体
+                JsonRpcRequest rpcRequest;
+                rpcRequest.id = doc["id"] | 0; // 如果id不存在，默认为0
+                rpcRequest.client_id = client->id();
+                
+                strncpy(rpcRequest.method, doc["method"], sizeof(rpcRequest.method) - 1);
+                
+                if (!doc["params"].isNull()) {
+                    serializeJson(doc["params"], rpcRequest.params, sizeof(rpcRequest.params));
+                }
+
+                // 发送到命令队列
+                if (xQueueSend(xCommandQueue, &rpcRequest, pdMS_TO_TICKS(10)) != pdPASS) {
+                    ESP_LOGE("WebServer", "Command queue full, dropping RPC request.");
+                    client->text("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32000,\"message\":\"Server busy, command queue full\"},\"id\":rpcRequest.id}");
                 }
             }
             break;
         }
-        case WS_EVT_PONG: // 收到PONG帧，可用于心跳机制
-        case WS_EVT_ERROR: // 发生错误
+        case WS_EVT_PONG:
+        case WS_EVT_ERROR:
             break;
     }
 }

@@ -14,40 +14,6 @@
 // 初始化静态单例指针
 Sys_Filesystem* Sys_Filesystem::_instance = nullptr;
 
-namespace {
-/**
- * @brief 一个通用的、挂载单个文件系统的私有辅助模板函数。
- * @tparam FSType 文件系统类的具体类型 (e.g., LittleFSFS, FFatFS)
- * @param fs 文件系统对象的引用 (如 LittleFS, FFat)。
- * @param partition_label 分区表中的标签名。
- * @param mount_point 挂载点路径。
- * @return bool 是否成功挂载。
- */
-template<typename FSType>
-bool mountFs(FSType& fs, const char* partition_label, const char* mount_point) {
-    ESP_LOGI("FS", "Mounting '%s' partition to '%s'...", partition_label, mount_point);
-    
-    if (fs.begin(false, mount_point, 10, partition_label)) {
-        ESP_LOGI("FS", "'%s' mounted successfully.", partition_label);
-        return true;
-    }
-
-    ESP_LOGE("FS", "'%s' mount failed! Attempting to format...", partition_label);
-    if (fs.format()) {
-        ESP_LOGI("FS", "'%s' partition formatted successfully. Remounting...", partition_label);
-        if (fs.begin(false, mount_point, 10, partition_label)) {
-            ESP_LOGI("FS", "'%s' remounted successfully after format.", partition_label);
-            return true;
-        } else {
-            ESP_LOGE("FS", "FATAL: '%s' remount failed after format!", partition_label);
-            return false;
-        }
-    } else {
-        ESP_LOGE("FS", "FATAL: Formatting '%s' partition failed!", partition_label);
-        return false;
-    }
-}
-} // namespace
 
 /**
  * @brief 获取文件系统管理器的单例实例。

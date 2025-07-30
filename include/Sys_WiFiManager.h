@@ -84,7 +84,7 @@ private:
     static Sys_WiFiManager* _instance;
     
     // 内部状态机
-    volatile WiFiState _currentState = WiFiState::DISABLED; // [优化] 使用 volatile 确保多线程可见性
+    volatile WiFiState _currentState = WiFiState::WIFI_STATE_DISABLED; // [优化] 使用 volatile 确保多线程可见性
     
     // [优化] 引入互斥锁，保护所有临界区
     SemaphoreHandle_t _mutex = NULL;

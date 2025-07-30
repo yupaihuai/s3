@@ -187,7 +187,7 @@ void Sys_WiFiManager::WiFiEvent(WiFiEvent_t event, arduino_event_info_t info) {
             break;
 
         case ARDUINO_EVENT_WIFI_STA_DISCONNECTED: {
-            wifi_err_reason_t reason = info.wifi_sta_disconnected.reason;
+            wifi_err_reason_t reason = (wifi_err_reason_t)info.wifi_sta_disconnected.reason;
             ESP_LOGW("WiFiMan", "STA Disconnected. Reason: %d (%s)", reason, WiFi.disconnectReasonName(reason));
 
             // [优化] 智能重连逻辑

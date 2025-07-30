@@ -44,7 +44,7 @@ void Sys_Tasks::begin(AsyncWebSocket* webSocket) {
     DEBUG_LOG("Initializing system tasks and communication handles...");
 
     // 步骤 1: 创建通信句柄
-    xCommandQueue = xQueueCreate(10, sizeof(Command));
+    xCommandQueue = xQueueCreate(10, sizeof(JsonRpcRequest));
     xStateQueue = xQueueCreate(20, sizeof(char[1024]));
     xDataEventGroup = xEventGroupCreate();
 
@@ -88,29 +88,15 @@ void Sys_Tasks::begin(AsyncWebSocket* webSocket) {
  */
 void Sys_Tasks::taskWorkerLoop(void* parameter) {
     ESP_LOGI(TASK_WORKER_NAME, "Task starting... Now monitored by TWDT.");
-    Command cmd;
+    JsonRpcRequest request;
 
     for (;;) {
         // [优化] 每次循环前“喂狗”，表示任务还活着
         esp_task_wdt_reset();
 
-        if (xQueueReceive(xCommandQueue, &cmd, portMAX_DELAY) == pdPASS) {
-            DEBUG_LOG("Worker received command type: %d", cmd.type);
-
-            // [优化] 将处理逻辑分发到独立的函数中
-            switch (cmd.type) {
-                case Command::SAVE_WIFI:      processSaveWifi(cmd.payload); break;
-                case Command::SAVE_BLE:       processSaveBle(cmd.payload); break;
-                case Command::SCAN_WIFI:      processScanWifi(); break;
-                case Command::REBOOT:         processReboot(); break;
-                case Command::FACTORY_RESET:  processFactoryReset(); break;
-                #if CORE_DEBUG_MODE
-                case Command::RUN_DIAGNOSTICS: processRunDiagnostics(); break;
-                #endif
-                default:
-                    ESP_LOGW(TASK_WORKER_NAME, "Unknown command received: %d", cmd.type);
-                    break;
-            }
+        if (xQueueReceive(xCommandQueue, &request, portMAX_DELAY) == pdPASS) {
+            DEBUG_LOG("Worker received RPC method: %s from client #%u", request.method, request.client_id);
+            processJsonRpcRequest(request);
         }
     }
 }
@@ -138,13 +124,15 @@ void Sys_Tasks::taskSystemMonitorLoop(void* parameter) {
         Sys_SettingsManager::getInstance()->commit();
 
         // 4. 采集系统状态并打包JSON
+        // 4. 采集系统状态并打包为JSON RPC 2.0通知
         JsonDocument doc;
-        doc["type"] = "system_status";
-        JsonObject data = doc["data"].to<JsonObject>();
-        data["uptime"] = millis();
-        data["free_heap"] = ESP.getFreeHeap();
-        data["free_psram"] = ESP.getFreePsram();
-        data["wifi_state"] = (int)Sys_WiFiManager::getInstance()->getCurrentState();
+        doc["jsonrpc"] = "2.0";
+        doc["method"] = "system.stateUpdate";
+        JsonObject params = doc["params"].to<JsonObject>();
+        params["uptime"] = millis();
+        params["free_heap"] = ESP.getFreeHeap();
+        params["free_psram"] = ESP.getFreePsram();
+        params["wifi_state"] = (int)Sys_WiFiManager::getInstance()->getCurrentState();
 
         char jsonBuffer[512];
         serializeJson(doc, jsonBuffer, sizeof(jsonBuffer));
@@ -188,7 +176,18 @@ void Sys_Tasks::taskWebSocketPusherLoop(void* parameter) {
         if (bits & BIT_STATE_QUEUE_READY) {
             DEBUG_LOG("Pusher woken by state queue event.");
             while (xQueueReceive(xStateQueue, &messageBuffer, 0) == pdPASS) {
-                webSocket->textAll(messageBuffer);
+                // 检查消息是响应还是通知
+                JsonDocument doc;
+                deserializeJson(doc, messageBuffer);
+                if (!doc["id"].isNull()) { // 这是一个响应
+                    uint32_t client_id = doc["client_id"];
+                    doc.remove("client_id"); // 从最终发送的JSON中移除内部client_id
+                    String response;
+                    serializeJson(doc, response);
+                    webSocket->text(client_id, response);
+                } else { // 这是一个通知
+                    webSocket->textAll(messageBuffer);
+                }
             }
         }
 
@@ -203,66 +202,144 @@ void Sys_Tasks::taskWebSocketPusherLoop(void* parameter) {
 // 命令处理函数实现 (Command Handler Implementations)
 // =================================================================================================
 
-void Sys_Tasks::processSaveWifi(const char* payload) {
-    ESP_LOGI(TASK_WORKER_NAME, "Processing SAVE_WIFI command...");
-    JsonDocument doc;
-    deserializeJson(doc, payload);
-    
-    // 使用 .c_str() 确保传递的是 const char*
-    Sys_SettingsManager::getInstance()->setWiFiConfig(doc["ssid"], doc["pass"], (SystemSettings::WiFiMode)doc["mode"].as<int>());
-    Sys_WiFiManager::getInstance()->applySettings();
-}
+/**
+ * @brief 响应一个JSON RPC请求的辅助函数。
+ * @param request 原始请求，用于获取id和client_id。
+ * @param result 要包含在响应中的`result`字段的JSON文档。
+ */
+static void sendRpcResult(const JsonRpcRequest& request, JsonDocument& result) {
+    JsonDocument response_doc;
+    response_doc["jsonrpc"] = "2.0";
+    response_doc["result"] = result.as<JsonVariant>();
+    response_doc["id"] = request.id;
+    response_doc["client_id"] = request.client_id; // 内部使用，用于pusher任务路由
 
-void Sys_Tasks::processSaveBle(const char* payload) {
-    ESP_LOGI(TASK_WORKER_NAME, "Processing SAVE_BLE command...");
-    JsonDocument doc;
-    deserializeJson(doc, payload);
-    Sys_SettingsManager::getInstance()->setBluetoothConfig(doc["enabled"], doc["name"]);
-    Sys_BlueToothManager::getInstance()->applySettings();
-}
-
-void Sys_Tasks::processScanWifi() {
-    ESP_LOGI(TASK_WORKER_NAME, "Processing SCAN_WIFI command...");
-    int n = WiFi.scanNetworks(false, true);
-    ESP_LOGI(TASK_WORKER_NAME, "Scan finished. Found %d networks.", n);
-
-    JsonDocument doc;
-    doc["type"] = "wifi_scan_result";
-    JsonArray networks = doc["data"].to<JsonArray>();
-    for (int i = 0; i < n; ++i) {
-        JsonObject net = networks.add<JsonObject>();
-        net["ssid"] = WiFi.SSID(i);
-        net["rssi"] = WiFi.RSSI(i);
-        net["auth"] = WiFi.encryptionType(i);
-    }
-    
     char jsonBuffer[1024];
-    serializeJson(doc, jsonBuffer, sizeof(jsonBuffer));
+    serializeJson(response_doc, jsonBuffer, sizeof(jsonBuffer));
     if (xQueueSend(xStateQueue, &jsonBuffer, 0) == pdPASS) {
         xEventGroupSetBits(xDataEventGroup, BIT_STATE_QUEUE_READY);
     } else {
-        ESP_LOGW(TASK_WORKER_NAME, "State queue full. WiFi scan result dropped.");
+        ESP_LOGW(TASK_WORKER_NAME, "State queue full. RPC response dropped for method %s.", request.method);
     }
-    WiFi.scanDelete();
 }
 
-void Sys_Tasks::processReboot() {
-    ESP_LOGW(TASK_WORKER_NAME, "Rebooting system now...");
-    Sys_SettingsManager::getInstance()->forceSave(); // 确保所有挂起的设置都已保存
-    delay(1000);
-    ESP.restart();
+/**
+ * @brief 响应一个JSON RPC错误的辅助函数。
+ */
+static void sendRpcError(const JsonRpcRequest& request, int code, const char* message) {
+    JsonDocument response_doc;
+    response_doc["jsonrpc"] = "2.0";
+    JsonObject error_obj = response_doc["error"].to<JsonObject>();
+    error_obj["code"] = code;
+    error_obj["message"] = message;
+    response_doc["id"] = request.id;
+    response_doc["client_id"] = request.client_id;
+
+    char jsonBuffer[256];
+    serializeJson(response_doc, jsonBuffer, sizeof(jsonBuffer));
+    if (xQueueSend(xStateQueue, &jsonBuffer, 0) == pdPASS) {
+        xEventGroupSetBits(xDataEventGroup, BIT_STATE_QUEUE_READY);
+    }
 }
 
-void Sys_Tasks::processFactoryReset() {
-    ESP_LOGW(TASK_WORKER_NAME, "Performing factory reset...");
-    Sys_SettingsManager::getInstance()->factoryReset();
-    delay(1000);
-    ESP.restart();
-}
 
-#if CORE_DEBUG_MODE
-void Sys_Tasks::processRunDiagnostics() {
-    ESP_LOGI(TASK_WORKER_NAME, "Processing RUN_DIAGNOSTICS command...");
-    Sys_Diagnostics::run();
+void Sys_Tasks::processJsonRpcRequest(const JsonRpcRequest& request) {
+    JsonDocument params_doc;
+    deserializeJson(params_doc, request.params);
+
+    // --- 系统命令 ---
+    if (strcmp(request.method, "system.reboot") == 0) {
+        JsonDocument result_doc;
+        result_doc["status"] = "rebooting";
+        sendRpcResult(request, result_doc);
+        delay(1000);
+        ESP.restart();
+    }
+    else if (strcmp(request.method, "system.factoryReset") == 0) {
+        JsonDocument result_doc;
+        result_doc["status"] = "resetting";
+        sendRpcResult(request, result_doc);
+        Sys_SettingsManager::getInstance()->factoryReset();
+        delay(1000);
+        ESP.restart();
+    }
+    // --- 设置管理 ---
+    else if (strcmp(request.method, "settings.get") == 0) {
+        const auto& settings = Sys_SettingsManager::getInstance()->getSettings();
+        JsonDocument result_doc;
+        JsonObject wifi_obj = result_doc["wifi"].to<JsonObject>();
+        wifi_obj["ssid"] = settings.wifi_ssid;
+        wifi_obj["mode"] = (int)settings.wifi_mode;
+        JsonObject bt_obj = result_doc["bluetooth"].to<JsonObject>();
+        bt_obj["deviceName"] = settings.bluetooth_name;
+        bt_obj["enabled"] = settings.bluetooth_enabled;
+        sendRpcResult(request, result_doc);
+    }
+    else if (strcmp(request.method, "settings.saveWiFi") == 0) {
+        const char* ssid = params_doc["ssid"];
+        const char* password = params_doc["password"];
+        if (ssid) {
+            Sys_SettingsManager::getInstance()->setWiFiConfig(ssid, password ? password : "", (SystemSettings::WiFiMode)params_doc["mode"].as<int>());
+            Sys_WiFiManager::getInstance()->applySettings();
+            JsonDocument result_doc;
+            result_doc["status"] = "success";
+            sendRpcResult(request, result_doc);
+        } else {
+            sendRpcError(request, -32602, "Invalid params: missing ssid");
+        }
+    }
+    else if (strcmp(request.method, "settings.saveBluetooth") == 0) {
+        const char* name = params_doc["deviceName"];
+        if (name) {
+            Sys_SettingsManager::getInstance()->setBluetoothConfig(params_doc["enabled"], name);
+            Sys_BlueToothManager::getInstance()->applySettings();
+            JsonDocument result_doc;
+            result_doc["status"] = "success";
+            sendRpcResult(request, result_doc);
+        } else {
+            sendRpcError(request, -32602, "Invalid params: missing deviceName");
+        }
+    }
+    // --- WiFi管理 ---
+    else if (strcmp(request.method, "wifi.scan") == 0) {
+        JsonDocument result_doc;
+        result_doc["status"] = "scanning";
+        sendRpcResult(request, result_doc); // 立即响应，告知客户端扫描已开始
+
+        int n = WiFi.scanNetworks(false, true);
+        ESP_LOGI(TASK_WORKER_NAME, "Scan finished. Found %d networks.", n);
+
+        JsonDocument scan_result_doc;
+        scan_result_doc["jsonrpc"] = "2.0";
+        scan_result_doc["method"] = "wifi.scanResult";
+        JsonArray networks = scan_result_doc["params"].to<JsonArray>();
+        for (int i = 0; i < n; ++i) {
+            JsonObject net = networks.add<JsonObject>();
+            net["ssid"] = WiFi.SSID(i);
+            net["rssi"] = WiFi.RSSI(i);
+            net["auth"] = WiFi.encryptionType(i);
+        }
+        
+        char jsonBuffer[1024];
+        serializeJson(scan_result_doc, jsonBuffer, sizeof(jsonBuffer));
+        if (xQueueSend(xStateQueue, &jsonBuffer, 0) == pdPASS) {
+            xEventGroupSetBits(xDataEventGroup, BIT_STATE_QUEUE_READY);
+        } else {
+            ESP_LOGW(TASK_WORKER_NAME, "State queue full. WiFi scan result dropped.");
+        }
+        WiFi.scanDelete();
+    }
+    // --- 调试命令 ---
+    #if CORE_DEBUG_MODE
+    else if (strcmp(request.method, "debug.runDiagnostics") == 0) {
+        ESP_LOGI(TASK_WORKER_NAME, "Processing RUN_DIAGNOSTICS command...");
+        Sys_Diagnostics::run();
+        JsonDocument result_doc;
+        result_doc["status"] = "completed";
+        sendRpcResult(request, result_doc);
+    }
+    #endif
+    else {
+        sendRpcError(request, -32601, "Method not found");
+    }
 }
-#endif

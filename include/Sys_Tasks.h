@@ -88,13 +88,10 @@ private:
     /** @brief Task_WebSocketPusher 的核心循环函数。*/
     static void taskWebSocketPusherLoop(void* parameter);
 
-    // --- [优化] 将命令处理逻辑拆分为独立的私有函数 ---
-    static void processSaveWifi(const char* payload);
-    static void processSaveBle(const char* payload);
-    static void processScanWifi();
-    static void processReboot();
-    static void processFactoryReset();
-    #if CORE_DEBUG_MODE
-    static void processRunDiagnostics();
-    #endif
+    // --- [重构] JSON RPC 请求的统一处理入口 ---
+    /**
+     * @brief 解析并分发JSON RPC请求到具体的处理逻辑。
+     * @param request 包含RPC方法和参数的请求对象。
+     */
+    static void processJsonRpcRequest(const struct JsonRpcRequest& request);
 };

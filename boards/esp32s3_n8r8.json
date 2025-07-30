@@ -7,6 +7,10 @@
     "mcu": "esp32s3",
     "variant": "esp32s3"
   },
+  "pins": {
+    "LED": "48",
+    "BOOT": "0"
+  },
   "connectivity": [
     "wifi",
     "bluetooth"

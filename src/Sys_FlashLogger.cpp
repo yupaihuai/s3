@@ -134,9 +134,9 @@ void Sys_FlashLogger::writeBufferToFile() {
     // 同时，变量类型建议使用 size_t。
     size_t items_waiting = 0; 
     if (_ring_buffer_handle) {
-        // 新版 API 调用，共5个参数 (handle + 4个指针)
-        // 我们只需要获取 "已使用" 的大小，所以其他指针传入 NULL
-        vRingbufferGetInfo(_ring_buffer_handle, NULL, &items_waiting, NULL, NULL);
+        // 新版 API 调用，共6个参数 (handle + 5个指针)
+        // 我们只需要获取 "已使用" 的大小(“可读取的字节数”的参数通常都是第3个)，所以其他指针传入 NULL
+        vRingbufferGetInfo(_ring_buffer_handle, NULL, NULL, NULL, &items_waiting, NULL);
     }
 
     if (items_waiting == 0) {

@@ -1,16 +1,15 @@
 /**
  * @file Sys_BlueToothManager.cpp
- * @brief 系统蓝牙管理器的实现文件
+ * @brief 系统蓝牙(BLE)管理器的实现文件 (基于NimBLE)
  * @author [ANEAK]
  * @date [2025/7]
  *
  * @details
- * 实现了蓝牙协议栈的初始化、配置应用逻辑和事件回调处理。
- * 它演示了如何与ESP-IDF的蓝牙API进行交互。
+ *  实现了基于NimBLE库的BLE协议栈初始化、广播管理和连接回调处理。
+ *  ESP32-S3仅支持BLE，此模块专为此设计。
  */
 #include "Sys_BlueToothManager.h"
 #include "Sys_Debug.h"
-#include "esp_gap_bt_api.h" // 引入经典蓝牙(BT Classic)的GAP API
 
 // 初始化静态单例指针
 Sys_BlueToothManager* Sys_BlueToothManager::_instance = nullptr;
@@ -29,38 +28,41 @@ Sys_BlueToothManager* Sys_BlueToothManager::getInstance() {
  * @brief 模块初始化。
  */
 void Sys_BlueToothManager::begin() {
-    _instance = this; // 关键一步：将this指针赋给静态实例，以便静态回调函数能访问到非静态成员
-
-    // 步骤1：初始化蓝牙底层控制器(Controller)
-    // 这是所有蓝牙操作（包括BLE和Classic）的基础
-    if (btStarted()) {
-        DEBUG_LOG("Bluetooth controller already started.");
-    } else {
-        if (!btStart()) {
-            ESP_LOGE("BTMan", "Failed to start Bluetooth controller!"); // 错误: 启动蓝牙控制器失败！
-            _currentState = BlueToothState::UNINITIALIZED;
-            return;
-        }
-    }
+    _instance = this; // 将this指针赋给静态实例，以便回调函数能访问到非静态成员
     
-    // 步骤2：初始化Bluedroid协议栈
-    // Bluedroid是支持Classic BT和BLE的功能完整的协议栈
-    esp_err_t ret = esp_bluedroid_init();
-    if (ret != ESP_OK) {
-        ESP_LOGE("BTMan", "Failed to initialize Bluedroid: %s", esp_err_to_name(ret));
-        return;
-    }
-    ret = esp_bluedroid_enable();
-    if (ret != ESP_OK) {
-        ESP_LOGE("BTMan", "Failed to enable Bluedroid: %s", esp_err_to_name(ret));
+    DEBUG_LOG("Initializing NimBLE stack...");
+    
+    // 步骤1: 初始化NimBLE库
+    // true表示初始化ESP控制器，false表示不初始化（如果已由其他组件初始化）
+    NimBLEDevice::init(""); // 设备名称将在applySettings中设置
+    
+    // 步骤2: 创建一个新的BLE服务器
+    _pServer = NimBLEDevice::createServer();
+    if (!_pServer) {
+        ESP_LOGE("BTMan", "Failed to create BLE Server!");
+        _currentState = BlueToothState::UNINITIALIZED;
         return;
     }
     
-    // 步骤3：注册GAP事件回调函数
-    // GAP(Generic Access Profile)事件处理设备发现、连接和安全等
-    esp_bt_gap_register_callback(esp_bt_gap_cb);
+    // 步骤3: 设置服务器回调
+    // this指针指向的对象（即Sys_BlueToothManager实例）将处理连接和断开事件
+    _pServer->setCallbacks(this);
 
-    // 步骤4：初始化完成后，立即应用一次当前的系统配置
+    // 步骤4: 获取广播实例
+    _pAdvertising = NimBLEDevice::getAdvertising();
+    if (!_pAdvertising) {
+        ESP_LOGE("BTMan", "Failed to get BLE Advertising instance!");
+        _currentState = BlueToothState::UNINITIALIZED;
+        return;
+    }
+    
+    // [示例] 添加一个设备信息服务 (Device Information Service)
+    // 这有助于BLE扫描器识别设备类型
+    _pAdvertising->addServiceUUID(NimBLEUUID("180A"));
+
+    _currentState = BlueToothState::BT_DISABLED; // 初始状态为已初始化但禁用
+
+    // 步骤5: 初始化完成后，立即应用一次当前的系统配置
     applySettings();
 }
 
@@ -68,37 +70,26 @@ void Sys_BlueToothManager::begin() {
  * @brief 周期性更新函数。
  */
 void Sys_BlueToothManager::update() {
-    // 当前版本，所有逻辑都是事件驱动的，此函数暂时为空。
-    // 未来可在这里添加需要轮询处理的逻辑，例如：
-    // - 检查A2DP流的超时
-    // - 管理一个懒加载的连接池
+    // NimBLE是事件驱动的，此函数暂时为空。
 }
 
 /**
  * @brief 应用最新的系统设置。
  */
 void Sys_BlueToothManager::applySettings() {
-    DEBUG_LOG("Applying new Bluetooth settings...");
+    DEBUG_LOG("Applying new BLE settings...");
     const auto& settings = Sys_SettingsManager::getInstance()->getSettings();
     
-    // --- 逻辑1: 处理蓝牙总开关 ---
     bool shouldBeEnabled = settings.bluetooth_enabled;
-    bool isEnabled = (_currentState == BlueToothState::ENABLED);
+    bool isAdvertising = (_currentState == BlueToothState::ADVERTISING);
 
-    if (shouldBeEnabled && !isEnabled) {
-        // 配置要求启用，但当前未启用 -> 执行启用流程
-        enableBlueTooth();
-    } else if (!shouldBeEnabled && isEnabled) {
-        // 配置要求禁用，但当前已启用 -> 执行禁用流程
-        disableBlueTooth();
-    }
+    // 更新设备名称
+    setDeviceName(settings.bluetooth_name);
 
-    // --- 逻辑2: 如果蓝牙是启用的，则更新设备名称 ---
-    if (shouldBeEnabled) {
-        // 比较内存中的名称和配置中的名称，只有不同时才更新，避免不必要的操作
-        if (strcmp(_currentDeviceName, settings.bluetooth_name) != 0) {
-            setDeviceName(settings.bluetooth_name);
-        }
+    if (shouldBeEnabled && !isAdvertising) {
+        startAdvertising();
+    } else if (!shouldBeEnabled && isAdvertising) {
+        stopAdvertising();
     }
 }
 
@@ -109,99 +100,87 @@ BlueToothState Sys_BlueToothManager::getCurrentState() const {
     return _currentState;
 }
 
+// --- NimBLEServerCallbacks 回调函数 ---
+
+/**
+ * @brief 处理客户端连接事件。
+ */
+void Sys_BlueToothManager::onConnect(NimBLEServer* pServer) {
+    ESP_LOGI("BTMan", "BLE Client Connected.");
+    _currentState = BlueToothState::CONNECTED;
+}
+
+/**
+ * @brief 处理客户端断开连接事件。
+ */
+void Sys_BlueToothManager::onDisconnect(NimBLEServer* pServer) {
+    ESP_LOGI("BTMan", "BLE Client Disconnected.");
+    // 断开连接后，根据配置决定是返回禁用状态还是重新开始广播
+    const auto& settings = Sys_SettingsManager::getInstance()->getSettings();
+    if (settings.bluetooth_enabled) {
+        // 延迟一小段时间后重新广播，给客户端一些时间来处理断开
+        vTaskDelay(pdMS_TO_TICKS(100));
+        startAdvertising();
+    } else {
+        _currentState = BlueToothState::BT_DISABLED;
+    }
+}
+
 // --- 私有辅助方法 (Private Methods) ---
 
 /**
- * @brief 异步启用蓝牙。
+ * @brief 启动BLE广播。
  */
-bool Sys_BlueToothManager::enableBlueTooth() {
-    if (_currentState == BlueToothState::ENABLED || _currentState == BlueToothState::ENABLING) {
-        return true; // 已经是启用或正在启用状态，无需重复操作
-    }
-    ESP_LOGI("BTMan", "Enabling Bluedroid stack...");
-    _currentState = BlueToothState::ENABLING; // 进入“正在启用”状态
-
-    // 这是一个异步操作，结果将在事件回调中确认
-    esp_err_t err = esp_bluedroid_enable();
-    if (err != ESP_OK) {
-        ESP_LOGE("BTMan", "Failed to enable Bluedroid: %s", esp_err_to_name(err));
-        _currentState = BlueToothState::BLUETOOTH_STATE_DISABLED; // 启用失败，回到禁用状态
-        return false;
-    }
-    return true;
-}
-
-/**
- * @brief 异步禁用蓝牙。
- */
-bool Sys_BlueToothManager::disableBlueTooth() {
-    if (_currentState == BlueToothState::BLUETOOTH_STATE_DISABLED || _currentState == BlueToothState::DISABLING) {
+bool Sys_BlueToothManager::startAdvertising() {
+    if (_currentState == BlueToothState::ADVERTISING || !_pAdvertising) {
         return true;
     }
-    ESP_LOGI("BTMan", "Disabling Bluedroid stack...");
-    _currentState = BlueToothState::DISABLING;
-
-    esp_err_t err = esp_bluedroid_disable();
-    if (err != ESP_OK) {
-        ESP_LOGE("BTMan", "Failed to disable Bluedroid: %s", esp_err_to_name(err));
-        _currentState = BlueToothState::ENABLED; // 禁用失败，回到启用状态
-        return false;
-    }
-    // 成功发起禁用请求，状态将在回调中更新为DISABLED
-    return true;
-}
-
-/**
- * @brief 设置蓝牙设备名称。
- */
-bool Sys_BlueToothManager::setDeviceName(const char* name) {
-    if (!name || strlen(name) == 0) return false;
-
-    ESP_LOGI("BTMan", "Setting Bluetooth device name to: '%s'", name);
-    esp_err_t err = esp_bt_dev_set_device_name(name); // 调用ESP-IDF API
-    if (err == ESP_OK) {
-        // 设置成功，更新内存缓存的名称
-        strncpy(_currentDeviceName, name, sizeof(_currentDeviceName) - 1);
-        _currentDeviceName[sizeof(_currentDeviceName) - 1] = '\0'; // 确保null结尾
+    ESP_LOGI("BTMan", "Starting BLE advertising...");
+    if (_pAdvertising->start()) {
+        _currentState = BlueToothState::ADVERTISING;
         return true;
     } else {
-        ESP_LOGE("BTMan", "Failed to set device name: %s", esp_err_to_name(err));
+        ESP_LOGE("BTMan", "Failed to start advertising.");
         return false;
     }
 }
 
 /**
- * @brief 静态GAP事件回调函数。
+ * @brief 停止BLE广播。
  */
-void Sys_BlueToothManager::esp_bt_gap_cb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t* param) {
-    if (!_instance) return; // 安全检查
-
-    switch (event) {
-        // 这是一个示例事件，当蓝牙协议栈准备好，并设置好扫描模式后触发
-        // 我们可以以此为标志，认为蓝牙已完全启用
-        case ESP_BT_GAP_SET_SCAN_MODE_EVT: {
-            DEBUG_LOG("GAP Event: Scan mode set, Bluetooth is fully enabled.");
-            _instance->_currentState = BlueToothState::ENABLED;
-            break;
-        }
-        
-        // 另一个示例：认证完成事件
-        case ESP_BT_GAP_AUTH_CMPL_EVT: {
-            if (param->auth_cmpl.stat == ESP_BT_STATUS_SUCCESS) {
-                ESP_LOGI("BTMan", "Authentication successful with a device.");
-            } else {
-                ESP_LOGE("BTMan", "Authentication failed, status: %d", param->auth_cmpl.stat);
-            }
-            break;
-        }
-        
-        // 注意：ESP-IDF中，Bluedroid的启用/禁用完成没有一个特定的GAP事件。
-        // 通常，调用enable/disable后，可以通过检查esp_bluedroid_get_status()或
-        // 等待其他依赖的服务（如A2DP）的启动事件来确认。
-        // 为简化，我们在这里主要依赖于调用函数的返回值和后续事件来管理状态。
-
-        default:
-            DEBUG_LOG("Unhandled GAP event: %d", event);
-            break;
+bool Sys_BlueToothManager::stopAdvertising() {
+    if (_currentState != BlueToothState::ADVERTISING || !_pAdvertising) {
+        return true;
     }
+    ESP_LOGI("BTMan", "Stopping BLE advertising...");
+    if (_pAdvertising->stop()) {
+        _currentState = BlueToothState::BT_DISABLED;
+        return true;
+    } else {
+        ESP_LOGE("BTMan", "Failed to stop advertising.");
+        return false;
+    }
+}
+
+/**
+ * @brief 设置BLE设备名称。
+ */
+void Sys_BlueToothManager::setDeviceName(const char* name) {
+    if (!name || strlen(name) == 0 || strcmp(_currentDeviceName, name) == 0) {
+        return; // 如果名称为空或未改变，则不执行任何操作
+    }
+
+    ESP_LOGI("BTMan", "Setting BLE device name to: '%s'", name);
+    // 更新NimBLE设备名称
+    NimBLEDevice::setDeviceName(name);
+    
+    // 如果正在广播，需要重启广播以应用新名称
+    if (_currentState == BlueToothState::ADVERTISING) {
+        _pAdvertising->stop();
+        _pAdvertising->start();
+    }
+    
+    // 更新内部缓存
+    strncpy(_currentDeviceName, name, sizeof(_currentDeviceName) - 1);
+    _currentDeviceName[sizeof(_currentDeviceName) - 1] = '\0';
 }
